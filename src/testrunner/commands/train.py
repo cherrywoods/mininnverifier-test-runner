@@ -31,7 +31,7 @@ from pathlib import Path
 
 import numpy as np
 
-from testrunner.commands.common import build_eval_grad_cmd, get_timeout, parse_output_paths
+from testrunner.commands.common import build_eval_grad_cmd, get_timeout, parse_output_paths, run_subprocess
 
 
 def build_train_cmd(config, test_dir, output_dir, backend, backend_arg):
@@ -176,7 +176,8 @@ def _eval_accuracy(checkpoint_path, input_bin, labels_bin, eval_batch_size,
     return accuracy, None
 
 
-def run_train_test(test_dir, config, output_dir, backend, backend_arg, generate=False):
+def run_train_test(test_dir, config, output_dir, backend, backend_arg, generate=False,
+                   output_handler=None):
     """Custom runner for train tests.
 
     Runs the train command, evaluates each checkpoint on train and test sets,
@@ -204,7 +205,11 @@ def run_train_test(test_dir, config, output_dir, backend, backend_arg, generate=
     timeout = get_timeout(config)
     cmd, cwd = build_train_cmd(config, test_dir, output_dir, backend, backend_arg)
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=timeout)
+        result = run_subprocess(
+            cmd, cwd=cwd, timeout=timeout,
+            log_file=output_dir / "stdout.log",
+            output_handler=output_handler,
+        )
     except subprocess.TimeoutExpired:
         return {
             "passed": False,

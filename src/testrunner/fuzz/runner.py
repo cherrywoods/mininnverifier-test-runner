@@ -27,7 +27,8 @@ from .graph_builder import (
 )
 
 
-def run_fuzz_eval(test_dir, config, output_dir, backend, backend_arg, generate=False):
+def run_fuzz_eval(test_dir, config, output_dir, backend, backend_arg, generate=False,
+                  output_handler=None):
     """Fuzz runner for eval command."""
     if generate:
         import warnings
@@ -36,7 +37,8 @@ def run_fuzz_eval(test_dir, config, output_dir, backend, backend_arg, generate=F
     return _run_fuzz(test_dir, config, output_dir, backend, backend_arg, mode="eval")
 
 
-def run_fuzz_grad(test_dir, config, output_dir, backend, backend_arg, generate=False):
+def run_fuzz_grad(test_dir, config, output_dir, backend, backend_arg, generate=False,
+                  output_handler=None):
     """Fuzz runner for grad command."""
     if generate:
         import warnings
