@@ -9,11 +9,8 @@ from pathlib import Path
 
 
 DEFAULT_TIMEOUTS = {
-    "eval": 60,
-    "grad": 60,
-    "train": 600,
-    "fuzz_eval": 600,
-    "fuzz_grad": 600,
+    "eval": 60, "grad": 60, "train": 600, "fuzz_eval": 600, "fuzz_grad": 600,
+    "bench_eval": 600, "bench_grad": 600,
 }
 
 
@@ -65,10 +62,7 @@ def run_subprocess(cmd, cwd=None, timeout=60, log_file=None, output_handler=None
     ``subprocess.CompletedProcess``.  Raises ``subprocess.TimeoutExpired``
     on timeout (after killing the process).
     """
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, cwd=cwd,
-    )
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=cwd)
 
     # Drain stderr in a background thread to avoid deadlocks
     stderr_chunks = []

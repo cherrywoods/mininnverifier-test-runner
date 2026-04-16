@@ -25,6 +25,7 @@ _st_n_ops = st.integers(min_value=5, max_value=20)
 # Graph representation
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class Var:
     name: str
@@ -57,16 +58,21 @@ BINARY_ELEMENTWISE = ["add", "mul"]
 ALL_PRIMITIVES = [
     *UNARY_ELEMENTWISE,
     *BINARY_ELEMENTWISE,
-    "dot", "where",
-    "expand_dims", "moveaxis", "reshape", "reduce_sum",
+    "dot",
+    "where",
+    "expand_dims",
+    "moveaxis",
+    "reshape",
+    "reduce_sum",
 ]
-UNSAFE_PRIMITIVES = {"log", "sqrt", "reciprocal"}
+UNSAFE_PRIMITIVES = {"log", "sqrt", "reciprocal", "exp"}
 SAFE_PRIMITIVES = [p for p in ALL_PRIMITIVES if p not in UNSAFE_PRIMITIVES]
 
 
 # ---------------------------------------------------------------------------
 # Graph construction
 # ---------------------------------------------------------------------------
+
 
 def generate_graph(draw, primitives=None) -> Graph:
     """Generate a random valid compute graph.
@@ -104,10 +110,7 @@ def generate_graph(draw, primitives=None) -> Graph:
 
         for prim_idx in order:
             prim_name = primitives[prim_idx]
-            result = _try_apply(
-                prim_name, available, draw,
-                var_counter, const_counter, constants,
-            )
+            result = _try_apply(prim_name, available, draw, var_counter, const_counter, constants)
             if result is not None:
                 eqn, new_var, new_consts, var_counter, const_counter = result
                 equations.append(eqn)
@@ -126,12 +129,7 @@ def generate_graph(draw, primitives=None) -> Graph:
     else:
         outvars = [invars[0]]
 
-    return Graph(
-        invars=invars,
-        outvars=outvars,
-        equations=equations,
-        constants=constants,
-    )
+    return Graph(invars=invars, outvars=outvars, equations=equations, constants=constants)
 
 
 def _try_apply(prim_name, available, draw, var_counter, const_counter, constants):
@@ -156,9 +154,7 @@ def _try_apply(prim_name, available, draw, var_counter, const_counter, constants
         if matches:
             inp2 = _pick(matches)
         else:
-            inp2, const_counter = _make_constant(
-                inp.shape, const_counter, draw, new_consts,
-            )
+            inp2, const_counter = _make_constant(inp.shape, const_counter, draw, new_consts)
         out_shape = inp.shape
         out_var = Var(name=_var_name(var_counter), shape=out_shape)
         eqn = Equation(prim_name, [inp, inp2], out_var)
@@ -177,9 +173,7 @@ def _try_apply(prim_name, available, draw, var_counter, const_counter, constants
             right = _pick(candidates_right)
         else:
             n = draw(_st_dim_size)
-            right, const_counter = _make_constant(
-                (k, n), const_counter, draw, new_consts,
-            )
+            right, const_counter = _make_constant((k, n), const_counter, draw, new_consts)
         out_shape = (left.shape[0], right.shape[1])
         out_var = Var(name=_var_name(var_counter), shape=out_shape)
         eqn = Equation(prim_name, [left, right], out_var)
@@ -197,9 +191,7 @@ def _try_apply(prim_name, available, draw, var_counter, const_counter, constants
                 matches = [v for v in matches if v is not chosen]
                 inputs.append(chosen)
             else:
-                c, const_counter = _make_constant(
-                    shape, const_counter, draw, new_consts,
-                )
+                c, const_counter = _make_constant(shape, const_counter, draw, new_consts)
                 inputs.append(c)
         out_var = Var(name=_var_name(var_counter), shape=shape)
         eqn = Equation(prim_name, inputs, out_var)
@@ -248,7 +240,7 @@ def _try_apply(prim_name, available, draw, var_counter, const_counter, constants
             return None
         inp = _pick(candidates)
         axis = draw(st.integers(min_value=0, max_value=len(inp.shape) - 1))
-        out_shape = inp.shape[:axis] + inp.shape[axis + 1:]
+        out_shape = inp.shape[:axis] + inp.shape[axis + 1 :]
         if not out_shape:
             out_shape = ()
         out_var = Var(name=_var_name(var_counter), shape=out_shape)
@@ -261,11 +253,15 @@ def _try_apply(prim_name, available, draw, var_counter, const_counter, constants
 def _make_constant(shape, const_counter, draw, new_consts):
     """Create a constant variable with random values."""
     name = _const_name(const_counter)
-    values = draw(np_arrays(
-        dtype=np.float64,
-        shape=shape,
-        elements=st.floats(min_value=-2.0, max_value=2.0, allow_nan=False, allow_infinity=False),
-    ))
+    values = draw(
+        np_arrays(
+            dtype=np.float64,
+            shape=shape,
+            elements=st.floats(
+                min_value=-2.0, max_value=2.0, allow_nan=False, allow_infinity=False
+            ),
+        )
+    )
     var = Var(name=name, shape=shape, is_const=True)
     new_consts[name] = values
     return var, const_counter + 1
@@ -314,6 +310,7 @@ def _factorize(n):
 # Naming
 # ---------------------------------------------------------------------------
 
+
 def _var_name(index):
     """Lowercase variable name: a, b, ..., z, aa, ab, ..."""
     if index < 26:
@@ -329,6 +326,7 @@ def _const_name(index):
 # ---------------------------------------------------------------------------
 # Serialization to .mininn format
 # ---------------------------------------------------------------------------
+
 
 def serialize_graph(graph: Graph) -> bytes:
     """Serialize a Graph to .mininn zip format (as bytes)."""

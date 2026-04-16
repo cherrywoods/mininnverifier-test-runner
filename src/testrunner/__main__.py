@@ -3,9 +3,9 @@
 """Test runner for mininnverifier-compatible implementations.
 
 Usage:
-    python -m testrunner <test_dir> docker <image>
-    python -m testrunner <test_dir> local "<command>"
-    python -m testrunner <test_dir> docker <image> --generate
+    python -m testrunner docker <image> <test_dir>
+    python -m testrunner local "<command>" <test_dir>
+    python -m testrunner docker <image> <test_dir> --generate
 """
 
 import argparse
@@ -15,10 +15,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from testrunner.commands import COMMANDS, RUNNERS
+from testrunner.commands import COMMANDS, RUNNERS, _init_runners, command_sort_key
 from testrunner.commands.common import get_timeout, parse_output_paths, run_subprocess
 from testrunner.check import CHECKS, DEFAULT_CHECKS
 from testrunner.output import CliOutputHandler, JsonOutputHandler
+from testrunner.scoring import compute_score
 
 
 # ---------------------------------------------------------------------------
@@ -26,12 +27,25 @@ from testrunner.output import CliOutputHandler, JsonOutputHandler
 # ---------------------------------------------------------------------------
 
 
-def run_single_test(test_dir, backend, backend_arg, generate=False,
-                    output_handler=None):
+def _attach_score(config, result):
+    """Add score, max_points, bonus, and max_bonus to a test result if configured."""
+    scoring = compute_score(config, result)
+    if scoring is not None:
+        result.update(scoring)
+    return result
+
+
+def is_closed(test_dir, config):
+    """Return True if this test is marked as closed (confidential)."""
+    return "closed" in str(test_dir) or config.get("access") == "closed"
+
+
+def run_single_test(test_dir, backend, backend_arg, generate=False, output_handler=None):
     """Run a single test from a directory containing test.json."""
     config = json.loads((test_dir / "test.json").read_text())
 
     command = config["command"]
+    closed = is_closed(test_dir, config)
 
     output_dir = test_dir / "actual"
     if output_dir.exists():
@@ -39,9 +53,19 @@ def run_single_test(test_dir, backend, backend_arg, generate=False,
     output_dir.mkdir()
 
     # Custom runners handle the full test lifecycle
+    _init_runners()
     if command in RUNNERS:
-        return RUNNERS[command](test_dir, config, output_dir, backend, backend_arg,
-                                generate=generate, output_handler=output_handler)
+        test_result = RUNNERS[command](
+            test_dir,
+            config,
+            output_dir,
+            backend,
+            backend_arg,
+            generate=generate,
+            output_handler=output_handler,
+            closed=closed,
+        )
+        return _attach_score(config, test_result)
 
     if command not in COMMANDS:
         return {"passed": False, "error": f"unknown command: {command}"}
@@ -50,27 +74,30 @@ def run_single_test(test_dir, backend, backend_arg, generate=False,
     timeout = get_timeout(config)
     try:
         result = run_subprocess(
-            cmd, cwd=cwd, timeout=timeout,
-            log_file=output_dir / "stdout.log",
+            cmd,
+            cwd=cwd,
+            timeout=timeout,
+            log_file=None if closed else output_dir / "stdout.log",
             output_handler=output_handler,
         )
     except subprocess.TimeoutExpired:
-        return {
-            "passed": False,
-            "output_files": [],
-            "error": f"command timed out after {timeout}s",
-        }
+        return _attach_score(
+            config, {"passed": False, "output_files": [], "error": f"command timed out after {timeout}s"}
+        )
 
     if result.returncode != 0:
-        return {
-            "passed": False,
-            "output_files": [],
-            "error": f"command failed (exit {result.returncode}): {result.stderr.strip()}",
-        }
+        return _attach_score(
+            config,
+            {
+                "passed": False,
+                "output_files": [],
+                "error": "command failed"
+                if closed
+                else f"command failed (exit {result.returncode}): {result.stderr.strip()}",
+            },
+        )
 
     output_files, warnings = parse_output_paths(result.stdout)
-    for w in warnings:
-        print(f"warning: {w}", file=sys.stderr)
 
     if generate:
         for out_file in output_files:
@@ -81,53 +108,69 @@ def run_single_test(test_dir, backend, backend_arg, generate=False,
             "error": None,
             "generated": True,
             "output_files": [str(f) for f in output_files],
+            "warnings": warnings,
         }
 
     check_name = config.get("check", DEFAULT_CHECKS.get(command))
     if check_name is None:
-        return {
-            "passed": False,
-            "error": f"no check specified and no default for command '{command}'",
-        }
+        return _attach_score(
+            config,
+            {
+                "passed": False,
+                "error": f"no check specified and no default for command '{command}'",
+            },
+        )
     if check_name not in CHECKS:
-        return {"passed": False, "error": f"unknown check: {check_name}"}
+        return _attach_score(config, {"passed": False, "error": f"unknown check: {check_name}"})
 
-    check_result = CHECKS[check_name](test_dir, config, output_files)
-    return {
-        "passed": check_result["passed"],
-        "output_files": [str(f) for f in output_files],
-        "error": check_result["error"],
-    }
+    check_result = CHECKS[check_name](test_dir, config, output_files, closed=closed)
+    return _attach_score(
+        config,
+        {
+            "passed": check_result["passed"],
+            "output_files": [str(f) for f in output_files],
+            "error": check_result["error"],
+            "warnings": warnings,
+        },
+    )
 
 
-def run_tests(root_dir, backend, backend_arg, generate=False,
-              output_handler=None):
+def run_tests(root_dir, backend, backend_arg, generate=False, output_handler=None):
     """Discover and run all tests under root_dir.
 
     Returns a flat list of (test_path, result_dict) tuples.
     """
     root_dir = Path(root_dir).resolve()
 
-    # Discover all test directories
+    # Discover all test directories and sort by command cost (cheap first)
     test_dirs = sorted(p.parent for p in root_dir.rglob("test.json"))
-
     if not test_dirs:
         return []
+
+    def _sort_key(td):
+        cfg = json.loads((td / "test.json").read_text())
+        return (command_sort_key(cfg["command"]), td)
+
+    test_dirs.sort(key=_sort_key)
 
     total = len(test_dirs)
     results = []
     n_passed = 0
     n_failed = 0
+    total_score = 0.0
+    total_max_points = 0.0
+    total_bonus = 0.0
+    total_max_bonus = 0.0
 
     for i, test_dir in enumerate(test_dirs):
-        test_path = str(test_dir.relative_to(root_dir))
+        rel = test_dir.relative_to(root_dir)
+        test_path = test_dir.name if str(rel) == "." else str(rel)
 
         if output_handler is not None:
             output_handler.test_starting(test_path, i + 1, total)
 
         test_result = run_single_test(
-            test_dir, backend, backend_arg, generate,
-            output_handler=output_handler,
+            test_dir, backend, backend_arg, generate, output_handler=output_handler
         )
         results.append((test_path, test_result))
 
@@ -136,26 +179,36 @@ def run_tests(root_dir, backend, backend_arg, generate=False,
         else:
             n_failed += 1
 
+        if "score" in test_result:
+            total_score += test_result["score"]
+            total_max_points += test_result["max_points"]
+        if "bonus" in test_result:
+            total_bonus += test_result["bonus"]
+            total_max_bonus += test_result["max_bonus"]
+
         if output_handler is not None:
             output_handler.test_finished(test_path, test_result)
 
     if output_handler is not None:
-        output_handler.all_finished(n_passed, n_failed)
+        output_handler.all_finished(
+            n_passed, n_failed, total_score, total_max_points, total_bonus, total_max_bonus
+        )
 
     return results
 
 
 def main():
     parser = argparse.ArgumentParser(description="Run a mininnverifier test.")
-    parser.add_argument("test_dir", type=str)
     parser.add_argument("backend", choices=["docker", "local"])
     parser.add_argument("backend_arg", type=str, help="Docker image name or local command")
+    parser.add_argument("test_dir", type=str)
     parser.add_argument(
-        "--generate", action="store_true",
-        help="Generate expected outputs instead of checking",
+        "--generate", action="store_true", help="Generate expected outputs instead of checking"
     )
     parser.add_argument(
-        "--output", choices=["cli", "json"], default="cli",
+        "--output",
+        choices=["cli", "json"],
+        default="cli",
         help="Output mode: cli (default) for interactive display, json for JSONL",
     )
     args = parser.parse_args()
@@ -166,8 +219,7 @@ def main():
         handler = CliOutputHandler()
 
     results = run_tests(
-        args.test_dir, args.backend, args.backend_arg, args.generate,
-        output_handler=handler,
+        args.test_dir, args.backend, args.backend_arg, args.generate, output_handler=handler
     )
     if any(not r["passed"] for _, r in results):
         sys.exit(1)

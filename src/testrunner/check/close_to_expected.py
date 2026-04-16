@@ -5,7 +5,7 @@
 import numpy as np
 
 
-def check_close_to_expected(test_dir, config, output_files):
+def check_close_to_expected(test_dir, config, output_files, closed=False):
     expected_names = config.get("expected_outputs", [])
     tolerance = config.get("tolerance", 1e-4)
 
@@ -29,16 +29,17 @@ def check_close_to_expected(test_dir, config, output_files):
             }
 
         if not np.allclose(actual, expected, atol=tolerance, rtol=0):
-            diff = np.abs(actual - expected)
-            worst = int(np.argmax(diff))
-            return {
-                "passed": False,
-                "error": (
+            if closed:
+                error = f"{out_file.name}: max absolute diff exceeds tolerance threshold"
+            else:
+                diff = np.abs(actual - expected)
+                worst = int(np.argmax(diff))
+                error = (
                     f"{out_file.name}: max absolute diff "
                     f"{diff[worst]:.6e} > tolerance {tolerance:.1e} "
                     f"(index {worst}: expected {expected[worst]:.6e}, "
                     f"got {actual[worst]:.6e})"
-                ),
-            }
+                )
+            return {"passed": False, "error": error}
 
     return {"passed": True, "error": None}

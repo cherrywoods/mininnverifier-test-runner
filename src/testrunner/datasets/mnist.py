@@ -85,8 +85,7 @@ _FILES = [
 def _get_cache_dir():
     return Path(
         os.environ.get(
-            "MININNVERIFIER_CACHE_DIR",
-            Path.home() / ".cache" / "mininnverifier" / "datasets",
+            "MININNVERIFIER_CACHE_DIR", Path.home() / ".cache" / "mininnverifier" / "datasets"
         )
     )
 
