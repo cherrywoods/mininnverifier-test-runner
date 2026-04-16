@@ -60,21 +60,27 @@ ALL_PRIMITIVES = [
     "dot", "where",
     "expand_dims", "moveaxis", "reshape", "reduce_sum",
 ]
+UNSAFE_PRIMITIVES = {"log", "sqrt", "reciprocal"}
+SAFE_PRIMITIVES = [p for p in ALL_PRIMITIVES if p not in UNSAFE_PRIMITIVES]
 
 
 # ---------------------------------------------------------------------------
 # Graph construction
 # ---------------------------------------------------------------------------
 
-def generate_graph(draw) -> Graph:
+def generate_graph(draw, primitives=None) -> Graph:
     """Generate a random valid compute graph.
 
     Args:
         draw: hypothesis draw function (e.g. _DrawAdapter instance).
+        primitives: list of primitive names to use (defaults to ALL_PRIMITIVES).
 
     Returns:
         A Graph with random structure and constant values.
     """
+    if primitives is None:
+        primitives = ALL_PRIMITIVES
+
     # Generate input variables
     n_inputs = draw(_st_n_inputs)
     invars = []
@@ -93,11 +99,11 @@ def generate_graph(draw) -> Graph:
 
     for _ in range(n_ops):
         # Pick a random primitive and try to apply it
-        order = draw(st.permutations(list(range(len(ALL_PRIMITIVES)))))
+        order = draw(st.permutations(list(range(len(primitives)))))
         applied = False
 
         for prim_idx in order:
-            prim_name = ALL_PRIMITIVES[prim_idx]
+            prim_name = primitives[prim_idx]
             result = _try_apply(
                 prim_name, available, draw,
                 var_counter, const_counter, constants,

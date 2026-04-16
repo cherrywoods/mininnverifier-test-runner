@@ -15,9 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-import numpy as np
-
 from testrunner.commands import COMMANDS, RUNNERS
+from testrunner.commands.common import get_timeout, parse_output_paths
 from testrunner.check import CHECKS, DEFAULT_CHECKS
 
 
@@ -39,13 +38,22 @@ def run_single_test(test_dir, backend, backend_arg, generate=False):
 
     # Custom runners handle the full test lifecycle
     if command in RUNNERS:
-        return RUNNERS[command](test_dir, config, output_dir, backend, backend_arg)
+        return RUNNERS[command](test_dir, config, output_dir, backend, backend_arg,
+                                generate=generate)
 
     if command not in COMMANDS:
         return {"passed": False, "error": f"unknown command: {command}"}
 
     cmd, cwd = COMMANDS[command](config, test_dir, output_dir, backend, backend_arg)
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+    timeout = get_timeout(config)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {
+            "passed": False,
+            "output_files": [],
+            "error": f"command timed out after {timeout}s",
+        }
 
     if result.returncode != 0:
         return {
@@ -54,22 +62,17 @@ def run_single_test(test_dir, backend, backend_arg, generate=False):
             "error": f"command failed (exit {result.returncode}): {result.stderr.strip()}",
         }
 
-    output_files = []
-    for line in result.stdout.strip().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        p = Path(line)
-        if p.exists():
-            output_files.append(p)
-        else:
-            print(f"warning: ignoring non-existent output path: {line}", file=sys.stderr)
+    output_files, warnings = parse_output_paths(result.stdout)
+    for w in warnings:
+        print(f"warning: {w}", file=sys.stderr)
 
     if generate:
         for out_file in output_files:
             dest = test_dir / f"expected_{out_file.name}"
             shutil.copy2(out_file, dest)
         return {
+            "passed": True,
+            "error": None,
             "generated": True,
             "output_files": [str(f) for f in output_files],
         }
@@ -98,7 +101,6 @@ def run_tests(root_dir, backend, backend_arg, generate=False):
     down to each test.json.
     """
     root_dir = Path(root_dir).resolve()
-    cwd = Path.cwd().resolve()
 
     # Discover all test directories
     test_dirs = sorted(p.parent for p in root_dir.rglob("test.json"))
@@ -108,10 +110,10 @@ def run_tests(root_dir, backend, backend_arg, generate=False):
 
     results = {}
     for test_dir in test_dirs:
-        rel = test_dir.relative_to(cwd)
+        rel = test_dir.relative_to(root_dir)
         test_result = run_single_test(test_dir, backend, backend_arg, generate)
 
-        # Nest the result according to the path relative to cwd
+        # Nest the result according to the path relative to root_dir
         node = results
         parts = rel.parts
         for part in parts[:-1]:

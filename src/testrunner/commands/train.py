@@ -31,6 +31,8 @@ from pathlib import Path
 
 import numpy as np
 
+from testrunner.commands.common import build_eval_grad_cmd, get_timeout, parse_output_paths
+
 
 def build_train_cmd(config, test_dir, output_dir, backend, backend_arg):
     """Build the CLI command for the train step."""
@@ -68,31 +70,9 @@ def build_train_cmd(config, test_dir, output_dir, backend, backend_arg):
         return cmd, None
 
 
-def _build_eval_cmd(checkpoint_path, input_path, output_dir, backend, backend_arg, test_dir):
-    """Build an eval CLI command for a single batch."""
-    if backend == "docker":
-        return [
-            "docker", "run", "--rm",
-            "-v", f"{test_dir.resolve()}:/data",
-            backend_arg,
-            "eval",
-            "--output-dir", f"/data/{output_dir.relative_to(test_dir)}",
-            f"/data/{Path(checkpoint_path).relative_to(test_dir)}",
-            f"/data/{input_path.relative_to(test_dir)}",
-        ]
-    else:
-        return [
-            *shlex.split(backend_arg),
-            "eval",
-            "--output-dir", str(output_dir),
-            str(checkpoint_path),
-            str(input_path),
-        ]
-
-
 def _eval_accuracy(checkpoint_path, input_bin, labels_bin, eval_batch_size,
                    in_size, num_classes, output_dir, backend, backend_arg,
-                   test_dir, batch_paths=None):
+                   test_dir, batch_paths=None, timeout=60):
     """Evaluate a checkpoint on a dataset and return accuracy.
 
     If batch_paths is provided, uses those pre-split .bin files directly.
@@ -131,11 +111,48 @@ def _eval_accuracy(checkpoint_path, input_bin, labels_bin, eval_batch_size,
         batch_output_dir = output_dir / f"batch_{batch_idx}_output"
         batch_output_dir.mkdir(exist_ok=True)
 
-        cmd = _build_eval_cmd(
-            checkpoint_path, batch_input_path, batch_output_dir,
-            backend, backend_arg, test_dir,
+        # When batch_input_path is from a cached dataset outside test_dir,
+        # we can't use build_eval_grad_cmd (which assumes paths relative to
+        # test_dir). Build the command directly with absolute paths instead.
+        all_under_test_dir = (
+            checkpoint_path.is_relative_to(test_dir)
+            and batch_input_path.is_relative_to(test_dir)
         )
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        if all_under_test_dir:
+            eval_config = {
+                "command": "eval",
+                "network": str(checkpoint_path.relative_to(test_dir)),
+                "inputs": [str(batch_input_path.relative_to(test_dir))],
+            }
+            cmd, _ = build_eval_grad_cmd(
+                eval_config, test_dir, batch_output_dir, backend, backend_arg,
+            )
+        elif backend == "docker":
+            cmd = [
+                "docker", "run", "--rm",
+                "-v", f"{test_dir.resolve()}:/data",
+                "-v", f"{batch_input_path.resolve()}:/input/{batch_input_path.name}",
+                backend_arg,
+                "eval",
+                "--output-dir", f"/data/{batch_output_dir.relative_to(test_dir)}",
+                f"/data/{checkpoint_path.relative_to(test_dir)}",
+                f"/input/{batch_input_path.name}",
+            ]
+        else:
+            cmd = [
+                *shlex.split(backend_arg),
+                "eval",
+                "--output-dir", str(batch_output_dir),
+                str(checkpoint_path),
+                str(batch_input_path),
+            ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return None, (
+                f"eval timed out on {checkpoint_path.name} "
+                f"batch {batch_idx} after {timeout}s"
+            )
         if result.returncode != 0:
             return None, (
                 f"eval failed on {checkpoint_path.name} "
@@ -143,13 +160,7 @@ def _eval_accuracy(checkpoint_path, input_bin, labels_bin, eval_batch_size,
             )
 
         # Parse output file paths from stdout
-        output_files = []
-        for line in result.stdout.strip().splitlines():
-            line = line.strip()
-            if line:
-                p = Path(line)
-                if p.exists():
-                    output_files.append(p)
+        output_files, _ = parse_output_paths(result.stdout)
 
         if not output_files:
             return None, f"eval produced no output for batch {batch_idx}"
@@ -165,7 +176,7 @@ def _eval_accuracy(checkpoint_path, input_bin, labels_bin, eval_batch_size,
     return accuracy, None
 
 
-def run_train_test(test_dir, config, output_dir, backend, backend_arg):
+def run_train_test(test_dir, config, output_dir, backend, backend_arg, generate=False):
     """Custom runner for train tests.
 
     Runs the train command, evaluates each checkpoint on train and test sets,
@@ -190,8 +201,15 @@ def run_train_test(test_dir, config, output_dir, backend, backend_arg):
         }
 
     # Step 1: Run train command
+    timeout = get_timeout(config)
     cmd, cwd = build_train_cmd(config, test_dir, output_dir, backend, backend_arg)
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {
+            "passed": False,
+            "error": f"train command timed out after {timeout}s",
+        }
 
     if result.returncode != 0:
         return {
@@ -222,6 +240,14 @@ def run_train_test(test_dir, config, output_dir, backend, backend_arg):
 
     if not checkpoint_paths:
         return {"passed": False, "error": "train produced no checkpoint files"}
+
+    if generate:
+        return {
+            "passed": True,
+            "error": None,
+            "generated": True,
+            "checkpoints": [str(p) for p in checkpoint_paths],
+        }
 
     # Step 3: Resolve input/label paths
     #   When source_dataset is used, paths are already absolute.
@@ -265,6 +291,7 @@ def run_train_test(test_dir, config, output_dir, backend, backend_arg):
                 eval_batch_size, in_size, num_classes,
                 split_output_dir, backend, backend_arg, test_dir,
                 batch_paths=cached_batches.get(split_name),
+                timeout=get_timeout({**config, "command": "eval"}),
             )
             if error:
                 return {"passed": False, "error": error}
@@ -277,6 +304,7 @@ def run_train_test(test_dir, config, output_dir, backend, backend_arg):
 
     return {
         "passed": True,
+        "error": None,
         "best_test_accuracy": best_test_accuracy,
         "checkpoint_results": checkpoint_results,
     }

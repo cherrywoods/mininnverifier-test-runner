@@ -53,6 +53,12 @@ def prepare_batches(cache_dir, split, in_size, eval_batch_size):
     num_samples = images.size // in_size
     images = images.reshape(num_samples, in_size)
 
+    if num_samples % eval_batch_size != 0:
+        raise ValueError(
+            f"number of {split} samples ({num_samples}) is not divisible "
+            f"by eval_batch_size ({eval_batch_size})"
+        )
+
     num_batches = num_samples // eval_batch_size
     batch_paths = []
     for i in range(num_batches):
