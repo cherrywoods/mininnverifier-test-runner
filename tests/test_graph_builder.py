@@ -14,7 +14,9 @@ from testrunner.fuzz.graph_builder import (
     ALL_PRIMITIVES,
     SAFE_PRIMITIVES,
     UNARY_ELEMENTWISE,
+    UNARY_ACTIVATIONS,
     BINARY_ELEMENTWISE,
+    LAST_AXIS_OPS,
     Var,
     Equation,
     Graph,
@@ -529,7 +531,7 @@ def test_generate_graph_single_primitive(data):
 
 
 def test_all_primitives_contains_expected():
-    for p in UNARY_ELEMENTWISE + BINARY_ELEMENTWISE:
+    for p in UNARY_ELEMENTWISE + BINARY_ELEMENTWISE + UNARY_ACTIVATIONS + LAST_AXIS_OPS:
         assert p in ALL_PRIMITIVES
     for p in ["dot", "where", "expand_dims", "moveaxis", "reshape", "reduce_sum"]:
         assert p in ALL_PRIMITIVES
@@ -539,3 +541,145 @@ def test_safe_primitives_excludes_unsafe():
     unsafe = {"log", "sqrt", "reciprocal", "exp"}
     for p in SAFE_PRIMITIVES:
         assert p not in unsafe
+
+
+def test_safe_primitives_includes_new_primitives():
+    for p in UNARY_ACTIVATIONS + LAST_AXIS_OPS:
+        assert p in SAFE_PRIMITIVES
+
+
+# ---------------------------------------------------------------------------
+# New primitives: activations + last-axis ops
+# ---------------------------------------------------------------------------
+
+
+def test_try_apply_leaky_relu_sets_slope():
+    x = Var("a", (3, 4))
+    draw = _fixed_draw(x, 0.1)  # pick x, pick slope
+    result = _try_apply("leaky_relu", [x], draw, 1, 0, {})
+    assert result is not None
+    eqn, out_var, _, _, _ = result
+    assert out_var.shape == (3, 4)
+    assert "slope" in eqn.options
+    assert eqn.options["slope"] in [0.01, 0.05, 0.1, 0.2, 0.3]
+
+
+def test_try_apply_elu_no_options():
+    x = Var("a", (3,))
+    result = _try_apply("elu", [x], _fixed_draw(x), 1, 0, {})
+    assert result is not None
+    eqn, out_var, _, _, _ = result
+    assert eqn.options == {}
+    assert out_var.shape == (3,)
+
+
+def test_try_apply_gelu_no_options():
+    x = Var("a", (2, 5))
+    result = _try_apply("gelu", [x], _fixed_draw(x), 1, 0, {})
+    assert result is not None
+    eqn, out_var, _, _, _ = result
+    assert eqn.options == {}
+    assert out_var.shape == (2, 5)
+
+
+def test_try_apply_pad_output_shape():
+    x = Var("a", (4, 10))  # n = 10
+    # draw order: pick x, lp=2, rp=1, dilation=2 → dil_len=10+9=19, out=19+2+1=22
+    draw = _fixed_draw(x, 2, 1, 2)
+    result = _try_apply("pad", [x], draw, 1, 0, {})
+    assert result is not None
+    eqn, out_var, _, _, _ = result
+    assert out_var.shape == (4, 22)
+    assert eqn.options["config"] == (2, 1, 2)
+    assert eqn.options["value"] == 0.0
+
+
+def test_try_apply_pad_no_1d_candidates():
+    x = Var("a", ())  # 0-d
+    result = _try_apply("pad", [x], _fixed_draw(x), 1, 0, {})
+    assert result is None
+
+
+def test_try_apply_conv_creates_kernel_constant():
+    x = Var("a", (3, 8))
+    # draw order: pick x, k=3, stride=2, then constant data for kernel
+    def draw(strategy):
+        if not hasattr(draw, "n"):
+            draw.n = 0
+        draw.n += 1
+        if draw.n == 1:
+            return x
+        elif draw.n == 2:
+            return 3  # kernel size
+        elif draw.n == 3:
+            return 2  # stride
+        else:
+            return np.zeros((3,), dtype=np.float64)
+
+    result = _try_apply("conv", [x], draw, 1, 0, {})
+    assert result is not None
+    eqn, out_var, new_consts, _, const_c = result
+    # out_len = (8 - 3) // 2 + 1 = 3
+    assert out_var.shape == (3, 3)
+    assert eqn.options == {"stride": 2}
+    assert len(new_consts) == 1
+    assert const_c == 1
+
+
+def test_try_apply_conv_no_1d_candidates():
+    x = Var("a", ())
+    result = _try_apply("conv", [x], _fixed_draw(x), 1, 0, {})
+    assert result is None
+
+
+def test_try_apply_sumpool_output_shape():
+    x = Var("a", (2, 10))
+    # draw order: pick x, window=4, stride=3
+    draw = _fixed_draw(x, 4, 3)
+    result = _try_apply("sumpool", [x], draw, 1, 0, {})
+    assert result is not None
+    eqn, out_var, _, _, _ = result
+    # out_len = (10 - 4) // 3 + 1 = 3
+    assert out_var.shape == (2, 3)
+    assert eqn.options == {"window_size": 4, "stride": 3}
+
+
+def test_try_apply_sumpool_no_1d_candidates():
+    x = Var("a", ())
+    result = _try_apply("sumpool", [x], _fixed_draw(x), 1, 0, {})
+    assert result is None
+
+
+@given(st.data())
+@settings(max_examples=20, suppress_health_check=list(HealthCheck))
+def test_generate_graph_new_activations_only(data):
+    draw = data.draw
+    graph = generate_graph(draw, primitives=UNARY_ACTIVATIONS)
+    for eqn in graph.equations:
+        assert eqn.primitive in UNARY_ACTIVATIONS
+        if eqn.primitive == "leaky_relu":
+            assert "slope" in eqn.options
+
+
+@given(st.data())
+@settings(max_examples=20, suppress_health_check=list(HealthCheck))
+def test_generate_graph_last_axis_ops_only(data):
+    draw = data.draw
+    graph = generate_graph(draw, primitives=LAST_AXIS_OPS)
+    for eqn in graph.equations:
+        assert eqn.primitive in LAST_AXIS_OPS
+        # Last-axis ops preserve all but the final axis
+        assert eqn.output.shape[:-1] == eqn.inputs[0].shape[:-1]
+
+
+@given(st.data())
+@settings(max_examples=10, suppress_health_check=list(HealthCheck))
+def test_generate_graph_serializes_with_new_primitives(data):
+    """Graphs built from the full primitive set serialize to a valid .mininn."""
+    draw = data.draw
+    graph = generate_graph(draw, primitives=ALL_PRIMITIVES)
+    blob = serialize_graph(graph)
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+        assert "graph.txt" in zf.namelist()
+        text = zf.read("graph.txt").decode()
+        assert "input:" in text and "output:" in text
