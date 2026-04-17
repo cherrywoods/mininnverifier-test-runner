@@ -54,9 +54,12 @@ class Graph:
 # ---------------------------------------------------------------------------
 
 UNARY_ELEMENTWISE = ["neg", "reciprocal", "relu", "square", "sqrt", "exp", "log"]
+UNARY_ACTIVATIONS = ["leaky_relu", "elu", "gelu"]
 BINARY_ELEMENTWISE = ["add", "mul"]
+LAST_AXIS_OPS = ["pad", "conv", "sumpool"]
 ALL_PRIMITIVES = [
     *UNARY_ELEMENTWISE,
+    *UNARY_ACTIVATIONS,
     *BINARY_ELEMENTWISE,
     "dot",
     "where",
@@ -64,9 +67,12 @@ ALL_PRIMITIVES = [
     "moveaxis",
     "reshape",
     "reduce_sum",
+    *LAST_AXIS_OPS,
 ]
 UNSAFE_PRIMITIVES = {"log", "sqrt", "reciprocal", "exp"}
 SAFE_PRIMITIVES = [p for p in ALL_PRIMITIVES if p not in UNSAFE_PRIMITIVES]
+
+_LEAKY_RELU_SLOPES = [0.01, 0.05, 0.1, 0.2, 0.3]
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +151,76 @@ def _try_apply(prim_name, available, draw, var_counter, const_counter, constants
         out_shape = inp.shape
         out_var = Var(name=_var_name(var_counter), shape=out_shape)
         eqn = Equation(prim_name, [inp], out_var)
+        return eqn, out_var, new_consts, var_counter + 1, const_counter
+
+    elif prim_name in UNARY_ACTIVATIONS:
+        inp = _pick(available)
+        out_var = Var(name=_var_name(var_counter), shape=inp.shape)
+        if prim_name == "leaky_relu":
+            options = {"slope": _pick(_LEAKY_RELU_SLOPES)}
+        else:
+            options = {}
+        eqn = Equation(prim_name, [inp], out_var, options)
+        return eqn, out_var, new_consts, var_counter + 1, const_counter
+
+    elif prim_name == "pad":
+        candidates = [v for v in available if len(v.shape) >= 1]
+        if not candidates:
+            return None
+        inp = _pick(candidates)
+        n = inp.shape[-1]
+        lp = draw(st.integers(min_value=0, max_value=4))
+        rp = draw(st.integers(min_value=0, max_value=4))
+        dilation = draw(st.integers(min_value=1, max_value=3))
+        dil_len = n + (n - 1) * (dilation - 1)
+        out_last = dil_len + lp + rp
+        if out_last < 1:
+            return None
+        out_shape = inp.shape[:-1] + (out_last,)
+        out_var = Var(name=_var_name(var_counter), shape=out_shape)
+        eqn = Equation(
+            prim_name,
+            [inp],
+            out_var,
+            {"config": (lp, rp, dilation), "value": 0.0},
+        )
+        return eqn, out_var, new_consts, var_counter + 1, const_counter
+
+    elif prim_name == "conv":
+        candidates = [v for v in available if len(v.shape) >= 1 and v.shape[-1] >= 1]
+        if not candidates:
+            return None
+        inp = _pick(candidates)
+        n = inp.shape[-1]
+        k = draw(st.integers(min_value=1, max_value=min(n, 5)))
+        max_stride = n - k + 1
+        if max_stride < 1:
+            return None
+        stride = draw(st.integers(min_value=1, max_value=max_stride))
+        out_len = (n - k) // stride + 1
+        kernel, const_counter = _make_constant((k,), const_counter, draw, new_consts)
+        out_shape = inp.shape[:-1] + (out_len,)
+        out_var = Var(name=_var_name(var_counter), shape=out_shape)
+        eqn = Equation(prim_name, [inp, kernel], out_var, {"stride": stride})
+        return eqn, out_var, new_consts, var_counter + 1, const_counter
+
+    elif prim_name == "sumpool":
+        candidates = [v for v in available if len(v.shape) >= 1 and v.shape[-1] >= 1]
+        if not candidates:
+            return None
+        inp = _pick(candidates)
+        n = inp.shape[-1]
+        window = draw(st.integers(min_value=1, max_value=min(n, 5)))
+        max_stride = n - window + 1
+        if max_stride < 1:
+            return None
+        stride = draw(st.integers(min_value=1, max_value=max_stride))
+        out_len = (n - window) // stride + 1
+        out_shape = inp.shape[:-1] + (out_len,)
+        out_var = Var(name=_var_name(var_counter), shape=out_shape)
+        eqn = Equation(
+            prim_name, [inp], out_var, {"window_size": window, "stride": stride}
+        )
         return eqn, out_var, new_consts, var_counter + 1, const_counter
 
     elif prim_name in BINARY_ELEMENTWISE:
