@@ -601,8 +601,9 @@ def test_try_apply_pad_no_1d_candidates():
 
 
 def test_try_apply_conv_creates_kernel_constant():
-    x = Var("a", (3, 8))
-    # draw order: pick x, k=3, stride=2, then constant data for kernel
+    # NCHW input: (N=2, C_in=3, H=6, W=8)
+    x = Var("a", (2, 3, 6, 8))
+    # draw order: pick x, kh=3, kw=3, c_out=4, stride=2, then kernel data
     def draw(strategy):
         if not hasattr(draw, "n"):
             draw.n = 0
@@ -610,43 +611,57 @@ def test_try_apply_conv_creates_kernel_constant():
         if draw.n == 1:
             return x
         elif draw.n == 2:
-            return 3  # kernel size
+            return 3  # kernel height
         elif draw.n == 3:
+            return 3  # kernel width
+        elif draw.n == 4:
+            return 4  # c_out
+        elif draw.n == 5:
             return 2  # stride
         else:
-            return np.zeros((3,), dtype=np.float64)
+            return np.zeros((4, 3, 3, 3), dtype=np.float64)
 
     result = _try_apply("conv", [x], draw, 1, 0, {})
     assert result is not None
     eqn, out_var, new_consts, _, const_c = result
-    # out_len = (8 - 3) // 2 + 1 = 3
-    assert out_var.shape == (3, 3)
+    # out_h = (6 - 3) // 2 + 1 = 2; out_w = (8 - 3) // 2 + 1 = 3; c_out = 4
+    assert out_var.shape == (2, 4, 2, 3)
     assert eqn.options == {"stride": 2}
     assert len(new_consts) == 1
+    # Kernel must be OIHW (4-D)
+    kernel_shape = next(iter(new_consts.values())).shape
+    assert kernel_shape == (4, 3, 3, 3)
     assert const_c == 1
 
 
 def test_try_apply_conv_no_1d_candidates():
-    x = Var("a", ())
-    result = _try_apply("conv", [x], _fixed_draw(x), 1, 0, {})
+    """conv requires 4-D NCHW input; anything else is rejected."""
+    x1 = Var("a", ())
+    x2 = Var("b", (8,))
+    x3 = Var("c", (2, 8))
+    x4 = Var("d", (2, 4, 8))
+    result = _try_apply("conv", [x1, x2, x3, x4], _fixed_draw(x4), 1, 0, {})
     assert result is None
 
 
 def test_try_apply_sumpool_output_shape():
-    x = Var("a", (2, 10))
+    # NCHW input to exercise the typical case; sumpool operates on last two axes.
+    x = Var("a", (2, 1, 10, 10))
     # draw order: pick x, window=4, stride=3
     draw = _fixed_draw(x, 4, 3)
     result = _try_apply("sumpool", [x], draw, 1, 0, {})
     assert result is not None
     eqn, out_var, _, _, _ = result
-    # out_len = (10 - 4) // 3 + 1 = 3
-    assert out_var.shape == (2, 3)
+    # out_h = out_w = (10 - 4) // 3 + 1 = 3
+    assert out_var.shape == (2, 1, 3, 3)
     assert eqn.options == {"window_size": 4, "stride": 3}
 
 
 def test_try_apply_sumpool_no_1d_candidates():
-    x = Var("a", ())
-    result = _try_apply("sumpool", [x], _fixed_draw(x), 1, 0, {})
+    """sumpool requires ndim >= 2 (at least 2 spatial axes); 1-D inputs are rejected."""
+    x1 = Var("a", ())
+    x2 = Var("b", (10,))
+    result = _try_apply("sumpool", [x1, x2], _fixed_draw(x2), 1, 0, {})
     assert result is None
 
 
@@ -668,8 +683,21 @@ def test_generate_graph_last_axis_ops_only(data):
     graph = generate_graph(draw, primitives=LAST_AXIS_OPS)
     for eqn in graph.equations:
         assert eqn.primitive in LAST_AXIS_OPS
-        # Last-axis ops preserve all but the final axis
-        assert eqn.output.shape[:-1] == eqn.inputs[0].shape[:-1]
+        if eqn.primitive == "pad":
+            # pad is 1-D (last axis): leading dims preserved
+            assert eqn.output.shape[:-1] == eqn.inputs[0].shape[:-1]
+        elif eqn.primitive == "conv":
+            # NCHW × OIHW conv: input is 4-D, output shares N with input
+            assert len(eqn.inputs[0].shape) == 4
+            assert eqn.output.shape[0] == eqn.inputs[0].shape[0]
+            # Kernel is OIHW (4-D); C_in must match
+            assert len(eqn.inputs[1].shape) == 4
+            assert eqn.inputs[1].shape[1] == eqn.inputs[0].shape[1]
+            assert eqn.output.shape[1] == eqn.inputs[1].shape[0]
+        else:
+            # sumpool operates on last two spatial axes, preserves leading dims
+            assert len(eqn.inputs[0].shape) >= 2
+            assert eqn.output.shape[:-2] == eqn.inputs[0].shape[:-2]
 
 
 @given(st.data())

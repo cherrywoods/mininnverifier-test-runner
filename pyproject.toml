@@ -23,4 +23,6 @@ skip-magic-trailing-comma = true
 dev = [
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
+    "jax>=0.10.0",
+    "jaxlib>=0.10.0",
 ]

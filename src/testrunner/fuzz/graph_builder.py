@@ -16,7 +16,7 @@ from hypothesis.extra.numpy import arrays as np_arrays
 
 # Strategies for structural decisions
 _st_n_inputs = st.integers(min_value=1, max_value=10)
-_st_ndim = st.integers(min_value=1, max_value=3)
+_st_ndim = st.integers(min_value=1, max_value=4)
 _st_dim_size = st.integers(min_value=1, max_value=32)
 _st_n_ops = st.integers(min_value=5, max_value=20)
 
@@ -187,36 +187,49 @@ def _try_apply(prim_name, available, draw, var_counter, const_counter, constants
         return eqn, out_var, new_consts, var_counter + 1, const_counter
 
     elif prim_name == "conv":
-        candidates = [v for v in available if len(v.shape) >= 1 and v.shape[-1] >= 1]
+        # NCHW × OIHW 2-D convolution (matches jax.lax.conv). Input: (N, C_in, H, W);
+        # kernel: (C_out, C_in, kH, kW); output: (N, C_out, H', W').
+        candidates = [v for v in available if len(v.shape) == 4]
         if not candidates:
             return None
         inp = _pick(candidates)
-        n = inp.shape[-1]
-        k = draw(st.integers(min_value=1, max_value=min(n, 5)))
-        max_stride = n - k + 1
+        n, c_in, h, w = inp.shape
+        if h < 1 or w < 1 or c_in < 1:
+            return None
+        kh = draw(st.integers(min_value=1, max_value=min(h, 5)))
+        kw = draw(st.integers(min_value=1, max_value=min(w, 5)))
+        c_out = draw(st.integers(min_value=1, max_value=4))
+        max_stride = min(h - kh + 1, w - kw + 1)
         if max_stride < 1:
             return None
         stride = draw(st.integers(min_value=1, max_value=max_stride))
-        out_len = (n - k) // stride + 1
-        kernel, const_counter = _make_constant((k,), const_counter, draw, new_consts)
-        out_shape = inp.shape[:-1] + (out_len,)
+        out_h = (h - kh) // stride + 1
+        out_w = (w - kw) // stride + 1
+        kernel, const_counter = _make_constant(
+            (c_out, c_in, kh, kw), const_counter, draw, new_consts
+        )
+        out_shape = (n, c_out, out_h, out_w)
         out_var = Var(name=_var_name(var_counter), shape=out_shape)
         eqn = Equation(prim_name, [inp, kernel], out_var, {"stride": stride})
         return eqn, out_var, new_consts, var_counter + 1, const_counter
 
     elif prim_name == "sumpool":
-        candidates = [v for v in available if len(v.shape) >= 1 and v.shape[-1] >= 1]
+        # 2-D sum pooling on the last two axes with a square window.
+        candidates = [
+            v for v in available if len(v.shape) >= 2 and v.shape[-1] >= 1 and v.shape[-2] >= 1
+        ]
         if not candidates:
             return None
         inp = _pick(candidates)
-        n = inp.shape[-1]
-        window = draw(st.integers(min_value=1, max_value=min(n, 5)))
-        max_stride = n - window + 1
+        h, w = inp.shape[-2], inp.shape[-1]
+        window = draw(st.integers(min_value=1, max_value=min(h, w, 5)))
+        max_stride = min(h - window + 1, w - window + 1)
         if max_stride < 1:
             return None
         stride = draw(st.integers(min_value=1, max_value=max_stride))
-        out_len = (n - window) // stride + 1
-        out_shape = inp.shape[:-1] + (out_len,)
+        out_h = (h - window) // stride + 1
+        out_w = (w - window) // stride + 1
+        out_shape = inp.shape[:-2] + (out_h, out_w)
         out_var = Var(name=_var_name(var_counter), shape=out_shape)
         eqn = Equation(
             prim_name, [inp], out_var, {"window_size": window, "stride": stride}
