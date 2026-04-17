@@ -118,7 +118,7 @@ def test_reproduce_passes_correct_args(tmp_path):
     calls_seen = []
 
     def mock_rac(network, inputs, backend, backend_arg, mode, expected_shapes,
-                 check_nan_inf=False, timeout=60):
+                 check_nan_inf=False, timeout=60, extra_run_args=()):
         calls_seen.append({
             "mode": mode, "check_nan_inf": check_nan_inf,
             "expected_shapes": expected_shapes,

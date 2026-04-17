@@ -13,7 +13,9 @@ from testrunner.commands.common import (
     DEFAULT_TIMEOUTS,
     SubprocessResult,
     build_eval_grad_cmd,
+    container_run_prefix,
     get_timeout,
+    is_container_backend,
     parse_output_paths,
     run_subprocess,
 )
@@ -243,6 +245,81 @@ def test_build_eval_grad_cmd_local(tmp_path):
     assert "eval_runner" in cmd
     assert str(test_dir / "net.mininn") in cmd
     assert cwd is None
+
+
+def test_build_eval_grad_cmd_podman(tmp_path):
+    test_dir = tmp_path / "test"
+    test_dir.mkdir()
+    output_dir = test_dir / "actual"
+    output_dir.mkdir()
+    config = {"command": "eval", "network": "net.mininn", "inputs": ["input.bin"]}
+    cmd, cwd = build_eval_grad_cmd(config, test_dir, output_dir, "podman", "myimage:latest")
+    assert cmd[0] == "podman"
+    assert cmd[1] == "run"
+    assert "myimage:latest" in cmd
+    assert "eval" in cmd
+    assert f"{test_dir.resolve()}:/data" in cmd
+    assert "/data/net.mininn" in cmd
+    assert "/data/input.bin" in cmd
+    assert cwd is None
+
+
+def test_build_eval_grad_cmd_podman_extra_run_args(tmp_path):
+    test_dir = tmp_path / "test"
+    test_dir.mkdir()
+    output_dir = test_dir / "actual"
+    output_dir.mkdir()
+    config = {"command": "eval", "network": "n.mininn", "inputs": []}
+    extra = ("--network=none", "--memory=1g", "--read-only")
+    cmd, _ = build_eval_grad_cmd(
+        config, test_dir, output_dir, "podman", "img", extra_run_args=extra
+    )
+    # Extra args appear between ``run --rm`` and the ``-v`` mount
+    for flag in extra:
+        assert flag in cmd
+    # Image name still follows the mount
+    assert cmd.index("img") > cmd.index(f"{test_dir.resolve()}:/data")
+
+
+def test_build_eval_grad_cmd_docker_extra_run_args(tmp_path):
+    test_dir = tmp_path / "test"
+    test_dir.mkdir()
+    output_dir = test_dir / "actual"
+    output_dir.mkdir()
+    config = {"command": "eval", "network": "n.mininn", "inputs": []}
+    cmd, _ = build_eval_grad_cmd(
+        config, test_dir, output_dir, "docker", "img", extra_run_args=("--network=none",)
+    )
+    assert "--network=none" in cmd
+
+
+def test_build_eval_grad_cmd_local_ignores_extra_run_args(tmp_path):
+    test_dir = tmp_path / "test"
+    test_dir.mkdir()
+    output_dir = test_dir / "actual"
+    output_dir.mkdir()
+    config = {"command": "eval", "network": "n.mininn", "inputs": []}
+    cmd, _ = build_eval_grad_cmd(
+        config, test_dir, output_dir, "local", "./sut", extra_run_args=("--network=none",)
+    )
+    assert "--network=none" not in cmd
+
+
+def test_is_container_backend():
+    assert is_container_backend("docker")
+    assert is_container_backend("podman")
+    assert not is_container_backend("local")
+    assert not is_container_backend("other")
+
+
+def test_container_run_prefix_shape(tmp_path):
+    prefix = container_run_prefix("podman", tmp_path, ("--network=none",))
+    assert prefix[0] == "podman"
+    assert prefix[1] == "run"
+    assert prefix[2] == "--rm"
+    assert "--network=none" in prefix
+    assert "-v" in prefix
+    assert f"{tmp_path.resolve()}:/data" in prefix
 
 
 def test_build_eval_grad_cmd_local_multiple_inputs(tmp_path):

@@ -7,10 +7,12 @@ and reports scores.
 ## Overview
 
 Tests live in directories that each contain a `test.json` file describing what
-to run and what to check. The runner supports two backends:
+to run and what to check. The runner supports three backends:
 
 - **docker** — runs the implementation inside a Docker container (the test
   directory is mounted at `/data`)
+- **podman** — same as docker, but uses `podman run` (rootless-friendly);
+  identical mount layout and path rewriting
 - **local** — runs a local command directly
 
 Seven test modes are supported: `eval`, `grad`, `train`, `fuzz_eval`,
@@ -23,7 +25,8 @@ to the terminal.
 ### Run tests
 
 ```
-python -m testrunner {docker,local} backend_arg test_dir [--generate] [--output {cli,json}]
+python -m testrunner {docker,podman,local} backend_arg test_dir [--generate] \
+    [--output {cli,json}] [--extra-run-args "..."]
 ```
 
 Discovers every `test.json` beneath `test_dir`, runs them, and prints a
@@ -31,7 +34,18 @@ pass/fail summary. Exits with code 1 if any test fails.
 
 ```
 python -m testrunner docker my-image:latest tests/milestone1
+python -m testrunner podman my-image:latest tests/milestone1
 python -m testrunner local "python -m myimpl" tests/milestone1
+```
+
+`--extra-run-args` passes additional flags through to `docker run` / `podman
+run` (shell-quoted; ignored for the `local` backend). Use it to apply
+sandboxing or resource limits, e.g.
+
+```
+python -m testrunner podman my-image:latest tests/milestone1 \
+    --extra-run-args "--network=none --memory=1g --pids-limit=256 --read-only \
+                      --tmpfs=/tmp --cap-drop=ALL --security-opt=no-new-privileges"
 ```
 
 For details:
@@ -79,7 +93,7 @@ python -m testrunner.show -h
 ### Reproduce a fuzz failure
 
 ```
-python -m testrunner.reproduce {docker,local} backend_arg failure_dir
+python -m testrunner.reproduce {docker,podman,local} backend_arg failure_dir
 ```
 
 Reruns the exact network and inputs from a saved fuzz failure (a directory
@@ -110,9 +124,10 @@ All three commands share the same argument structure:
 <impl> train --output-dir <dir> <dataset-name>  <train_inputs.bin> <train_labels.bin>
 ```
 
-`<impl>` is the `backend_arg` — either a Docker image name or a shell command
-(e.g. `python -m myimpl`). For the docker backend the test directory is mounted
-at `/data` and all paths are rewritten accordingly.
+`<impl>` is the `backend_arg` — either a container image name (docker/podman)
+or a shell command (e.g. `python -m myimpl`). For the container backends
+(docker, podman) the test directory is mounted at `/data` and all paths are
+rewritten accordingly.
 
 **`eval` and `grad`** must:
 

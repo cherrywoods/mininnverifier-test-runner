@@ -11,6 +11,7 @@ Where <failure_dir> is a directory previously saved by the fuzz runner
 
 import argparse
 import json
+import shlex
 import shutil
 import sys
 import tempfile
@@ -22,7 +23,7 @@ import numpy as np
 from testrunner.fuzz.runner import run_and_check
 
 
-def reproduce(failure_dir, backend, backend_arg):
+def reproduce(failure_dir, backend, backend_arg, extra_run_args=()):
     """Reproduce a single saved fuzz failure.
 
     Copies the saved network and inputs into a temporary directory and
@@ -72,15 +73,28 @@ def reproduce(failure_dir, backend, backend_arg):
             mode,
             expected_shapes,
             check_nan_inf=check_nan_inf,
+            extra_run_args=extra_run_args,
         )
 
 
 def main():
     parser = argparse.ArgumentParser(description="Reproduce a saved fuzz failure.")
-    parser.add_argument("backend", choices=["docker", "local"])
-    parser.add_argument("backend_arg", type=str, help="Docker image name or local command")
+    parser.add_argument("backend", choices=["docker", "podman", "local"])
+    parser.add_argument(
+        "backend_arg", type=str, help="Container image name (docker/podman) or local command"
+    )
     parser.add_argument("failure_dir", type=str, help="Path to saved failure directory")
+    parser.add_argument(
+        "--extra-run-args",
+        type=str,
+        default="",
+        help=(
+            "Extra arguments passed through to 'docker run'/'podman run'. "
+            "Shell-quoted; ignored for the 'local' backend."
+        ),
+    )
     args = parser.parse_args()
+    extra_run_args = tuple(shlex.split(args.extra_run_args)) if args.extra_run_args else ()
 
     failure_dir = Path(args.failure_dir).resolve()
 
@@ -92,7 +106,7 @@ def main():
     # Print network and inputs before running
     _print_failure_inputs(failure_dir)
 
-    result = reproduce(failure_dir, args.backend, args.backend_arg)
+    result = reproduce(failure_dir, args.backend, args.backend_arg, extra_run_args=extra_run_args)
 
     if result["passed"]:
         print(f"{_GREEN}PASS: failure did not reproduce{_RESET}", file=sys.stderr)

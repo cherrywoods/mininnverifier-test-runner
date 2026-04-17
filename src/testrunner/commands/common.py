@@ -13,6 +13,34 @@ DEFAULT_TIMEOUTS = {
     "bench_eval": 600, "bench_grad": 600,
 }
 
+# Backends that run the implementation inside a container (mounting the
+# test directory at /data). ``docker`` and ``podman`` use identical CLIs
+# for the features we need (``run --rm -v src:/data image cmd args``).
+CONTAINER_BACKENDS = ("docker", "podman")
+
+
+def is_container_backend(backend):
+    """Return True if *backend* runs the SUT inside a container."""
+    return backend in CONTAINER_BACKENDS
+
+
+def container_run_prefix(backend, test_dir, extra_run_args=()):
+    """Return the ``<exe> run --rm [extra] -v <test_dir>:/data`` prefix.
+
+    *extra_run_args* is an optional sequence of additional ``run`` flags
+    (e.g. ``--network=none``, ``--memory=1g``) placed before the image
+    argument.  Paths inside the container are always rewritten to
+    ``/data/<relative>`` by callers.
+    """
+    return [
+        backend,
+        "run",
+        "--rm",
+        *extra_run_args,
+        "-v",
+        f"{Path(test_dir).resolve()}:/data",
+    ]
+
 
 def get_timeout(config):
     """Return timeout in seconds from config, falling back to per-command defaults."""
@@ -115,19 +143,15 @@ def run_subprocess(cmd, cwd=None, timeout=60, log_file=None, output_handler=None
     return SubprocessResult(proc.returncode, stdout_text, stderr_text)
 
 
-def build_eval_grad_cmd(config, test_dir, output_dir, backend, backend_arg):
+def build_eval_grad_cmd(config, test_dir, output_dir, backend, backend_arg, extra_run_args=()):
     """Shared builder for eval and grad — same argument structure."""
     command = config["command"]
     network = config["network"]
     inputs = config.get("inputs", [])
 
-    if backend == "docker":
+    if is_container_backend(backend):
         cmd = [
-            "docker",
-            "run",
-            "--rm",
-            "-v",
-            f"{test_dir.resolve()}:/data",
+            *container_run_prefix(backend, test_dir, extra_run_args),
             backend_arg,
             command,
             "--output-dir",

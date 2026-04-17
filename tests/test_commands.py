@@ -107,6 +107,27 @@ def test_build_train_cmd_docker(tmp_path):
     assert cwd is None
 
 
+def test_build_train_cmd_podman(tmp_path):
+    test_dir = tmp_path / "t"
+    test_dir.mkdir()
+    out = test_dir / "actual"
+    out.mkdir()
+    config = {
+        "command": "train",
+        "dataset": "mnist_mlp",
+        "train_inputs": ["resources/train_images.bin"],
+    }
+    cmd, cwd = build_train_cmd(
+        config, test_dir, out, "podman", "img", extra_run_args=("--network=none",)
+    )
+    assert cmd[0] == "podman"
+    assert cmd[1] == "run"
+    assert "--network=none" in cmd
+    assert "mnist_mlp" in cmd
+    assert "/data/resources/train_images.bin" in cmd
+    assert cwd is None
+
+
 def test_build_train_cmd_local_relative_inputs(tmp_path):
     test_dir = tmp_path / "t"
     test_dir.mkdir()
