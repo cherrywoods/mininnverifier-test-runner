@@ -52,6 +52,109 @@ def test_discover_tests_includes_command(tmp_path):
     assert test["path"] == "mytest"
 
 
+# ---------------------------------------------------------------------------
+# discover_tests — max_points / max_bonus / access / command
+# ---------------------------------------------------------------------------
+
+
+def _make_test_with_config(directory, name, config):
+    d = directory / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "test.json").write_text(json.dumps(config))
+    return d
+
+
+def test_discover_tests_includes_max_points_and_bonus(tmp_path):
+    _make_test_with_config(
+        tmp_path,
+        "t1",
+        {"command": "eval", "points": 7, "bonus_points": 3},
+    )
+    info = discover_tests(tmp_path)["."][0]
+    assert info["max_points"] == 7
+    assert info["max_bonus"] == 3
+    assert info["command"] == "eval"
+
+
+def test_discover_tests_defaults_max_points_to_zero(tmp_path):
+    _make_test(tmp_path, "t1", "eval")
+    info = discover_tests(tmp_path)["."][0]
+    assert info["max_points"] == 0
+    assert info["max_bonus"] == 0
+
+
+def test_discover_tests_access_open_and_closed(tmp_path):
+    _make_test_with_config(tmp_path, "open_test", {"command": "eval"})
+    _make_test_with_config(
+        tmp_path, "secret", {"command": "eval", "access": "closed"}
+    )
+    # Also a test under a "closed" subdirectory — access inferred from path.
+    _make_test_with_config(
+        tmp_path / "closed", "t", {"command": "eval"}
+    )
+    groups = discover_tests(tmp_path)
+    by_path = {t["path"]: t for g in groups.values() for t in g}
+    assert by_path["open_test"]["access"] == "open"
+    assert by_path["secret"]["access"] == "closed"
+    assert by_path["closed/t"]["access"] == "closed"
+
+
+def test_discover_tests_max_points_sum_matches_full_run(tmp_path):
+    """Per-directory sum of max_points equals what a full run reports."""
+    from unittest.mock import patch
+    from testrunner.commands.common import SubprocessResult
+    from testrunner.__main__ import run_tests
+
+    # Build a small tree: two subdirs, each with multiple tests of various points
+    for sub, specs in [
+        ("ms1", [("a", 5), ("b", 0), ("c", 10)]),
+        ("ms2", [("x", 3), ("y", 7)]),
+    ]:
+        for name, pts in specs:
+            _make_test_with_config(
+                tmp_path / sub,
+                name,
+                {
+                    "command": "eval",
+                    "network": "n.mininn",
+                    "inputs": [],
+                    "expected_outputs": [],
+                    "points": pts,
+                },
+            )
+
+    groups = discover_tests(tmp_path)
+
+    # Sum max_points per top-level milestone.
+    def sum_for_prefix(prefix):
+        total = 0
+        for group, tests in groups.items():
+            if group == prefix or group.startswith(prefix + "/"):
+                total += sum(t["max_points"] for t in tests)
+        return total
+
+    for sub, expected in [("ms1", 15), ("ms2", 10)]:
+        # What a full run of just this subdir would report.
+        totals = {}
+
+        class Handler:
+            def test_starting(self, *a): pass
+            def test_finished(self, *a): pass
+            def all_finished(
+                self, n_passed, n_failed,
+                total_score=0.0, total_max_points=0.0,
+                total_bonus=0.0, total_max_bonus=0.0,
+            ):
+                totals["max_points"] = total_max_points
+
+        mock_result = SubprocessResult(0, "", "")
+        with patch("testrunner.__main__.run_subprocess", return_value=mock_result):
+            run_tests(tmp_path / sub, "local", "sut", output_handler=Handler())
+
+        assert totals["max_points"] == expected
+        assert sum_for_prefix(sub) == expected
+
+
 def test_discover_tests_nested_group(tmp_path):
     _make_test(tmp_path / "a" / "b", "t1", "eval")
     groups = discover_tests(tmp_path)

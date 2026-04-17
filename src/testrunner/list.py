@@ -14,10 +14,29 @@ from collections import defaultdict
 from pathlib import Path
 
 
+def _resolve_access(test_dir, config):
+    """Return ``"closed"`` or ``"open"`` for a test.
+
+    Mirrors ``testrunner.__main__.is_closed``: a test is closed when its
+    path contains the substring ``"closed"`` or when its config sets
+    ``"access": "closed"``.
+    """
+    if "closed" in str(test_dir) or config.get("access") == "closed":
+        return "closed"
+    return "open"
+
+
 def discover_tests(root_dir):
     """Discover all tests under root_dir and group by parent directory.
 
-    Returns a dict mapping group names to lists of test info dicts.
+    Returns a dict mapping group names to lists of test info dicts.  Each
+    info dict carries:
+
+    - ``name``, ``path``, ``command``
+    - ``max_points``, ``max_bonus`` — the denominators a full run would
+      report (read from ``test.json``: ``points``/``bonus_points``,
+      defaulting to ``0``)
+    - ``access`` — ``"open"`` or ``"closed"``
     """
     root_dir = Path(root_dir).resolve()
     test_dirs = sorted(p.parent for p in root_dir.rglob("test.json"))
@@ -38,6 +57,9 @@ def discover_tests(root_dir):
             "name": name,
             "path": str(rel),
             "command": config.get("command"),
+            "max_points": config.get("points", 0),
+            "max_bonus": config.get("bonus_points", 0),
+            "access": _resolve_access(test_dir, config),
         })
 
     return dict(groups)
