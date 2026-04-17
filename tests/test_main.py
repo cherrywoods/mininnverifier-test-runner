@@ -468,6 +468,36 @@ def test_main_json_output_mode(tmp_path):
     mock_exit.assert_not_called()
 
 
+def test_main_accepts_podman_backend(tmp_path):
+    """The CLI accepts 'podman' as a backend and threads --extra-run-args."""
+    from testrunner.__main__ import main
+
+    seen = {}
+
+    def fake_run_tests(root, backend, backend_arg, generate=False,
+                       output_handler=None, extra_run_args=()):
+        seen["backend"] = backend
+        seen["extra_run_args"] = extra_run_args
+        return []
+
+    with patch("testrunner.__main__.run_tests", side_effect=fake_run_tests):
+        with patch(
+            "sys.argv",
+            [
+                "testrunner",
+                "podman",
+                "myimg:latest",
+                str(tmp_path),
+                "--extra-run-args",
+                "--network=none --memory=1g",
+            ],
+        ):
+            main()
+    assert seen["backend"] == "podman"
+    assert "--network=none" in seen["extra_run_args"]
+    assert "--memory=1g" in seen["extra_run_args"]
+
+
 def test_module_guard(tmp_path):
     """The if __name__ == '__main__': guard in __main__.py calls main()."""
     import runpy

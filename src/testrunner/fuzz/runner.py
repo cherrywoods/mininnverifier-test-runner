@@ -40,7 +40,12 @@ from hypothesis import (
 )
 from hypothesis.extra.numpy import arrays as np_arrays
 
-from testrunner.commands.common import get_timeout, parse_output_paths
+from testrunner.commands.common import (
+    container_run_prefix,
+    get_timeout,
+    is_container_backend,
+    parse_output_paths,
+)
 from .graph_builder import generate_graph, serialize_graph, ALL_PRIMITIVES, SAFE_PRIMITIVES
 
 PRIMITIVE_SETS = {"all": ALL_PRIMITIVES, "safe": SAFE_PRIMITIVES}
@@ -77,6 +82,7 @@ def run_fuzz_eval(
     generate=False,
     output_handler=None,
     closed=False,
+    extra_run_args=(),
 ):
     """Fuzz runner for eval command."""
     if generate:
@@ -93,6 +99,7 @@ def run_fuzz_eval(
         mode="eval",
         output_handler=output_handler,
         closed=closed,
+        extra_run_args=extra_run_args,
     )
 
 
@@ -105,6 +112,7 @@ def run_fuzz_grad(
     generate=False,
     output_handler=None,
     closed=False,
+    extra_run_args=(),
 ):
     """Fuzz runner for grad command."""
     if generate:
@@ -121,6 +129,7 @@ def run_fuzz_grad(
         mode="grad",
         output_handler=output_handler,
         closed=closed,
+        extra_run_args=extra_run_args,
     )
 
 
@@ -144,7 +153,15 @@ def _graph_with_inputs(draw, primitives=None):
 
 
 def _run_fuzz(
-    test_dir, config, output_dir, backend, backend_arg, mode, output_handler=None, closed=False
+    test_dir,
+    config,
+    output_dir,
+    backend,
+    backend_arg,
+    mode,
+    output_handler=None,
+    closed=False,
+    extra_run_args=(),
 ):
     n_trials = config.get("n_trials", 100)
     timeout = get_timeout(config)
@@ -190,6 +207,7 @@ def _run_fuzz(
             check_nan_inf=check_nan_inf,
             timeout=timeout,
             save_dir=trial_save_dir,
+            extra_run_args=extra_run_args,
         )
         if not result["passed"] and result.get("saved_to"):
             trial_size = len(serialize_graph(graph)) + sum(arr.nbytes for arr in inputs.values())
@@ -262,6 +280,7 @@ def _run_single_trial(
     check_nan_inf=True,
     timeout=60,
     save_dir=None,
+    extra_run_args=(),
 ):
     """Run a single fuzz trial.
 
@@ -298,6 +317,7 @@ def _run_single_trial(
             expected_shapes,
             check_nan_inf=check_nan_inf,
             timeout=timeout,
+            extra_run_args=extra_run_args,
         )
 
         if not result["passed"] and save_dir is not None:
@@ -324,6 +344,7 @@ def run_and_check(
     expected_shapes,
     check_nan_inf=True,
     timeout=60,
+    extra_run_args=(),
 ):
     """Run the SUT on a network/inputs and check the output.
 
@@ -339,7 +360,14 @@ def run_and_check(
     work_dir = network_path.parent
 
     cmd = _build_cmd(
-        mode, network_path, input_paths, work_dir / "output", backend, backend_arg, work_dir
+        mode,
+        network_path,
+        input_paths,
+        work_dir / "output",
+        backend,
+        backend_arg,
+        work_dir,
+        extra_run_args=extra_run_args,
     )
     (work_dir / "output").mkdir(exist_ok=True)
 
@@ -439,15 +467,20 @@ def _truncate(text, max_len=500):
     return text[:half] + " ... " + text[-half:]
 
 
-def _build_cmd(mode, network_path, input_paths, output_dir, backend, backend_arg, test_dir):
+def _build_cmd(
+    mode,
+    network_path,
+    input_paths,
+    output_dir,
+    backend,
+    backend_arg,
+    test_dir,
+    extra_run_args=(),
+):
     """Build the CLI command for eval or grad."""
-    if backend == "docker":
+    if is_container_backend(backend):
         cmd = [
-            "docker",
-            "run",
-            "--rm",
-            "-v",
-            f"{test_dir.resolve()}:/data",
+            *container_run_prefix(backend, test_dir, extra_run_args),
             backend_arg,
             mode,
             "--output-dir",

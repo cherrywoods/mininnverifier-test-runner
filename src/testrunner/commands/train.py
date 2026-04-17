@@ -41,24 +41,22 @@ import numpy as np
 
 from testrunner.commands.common import (
     build_eval_grad_cmd,
+    container_run_prefix,
     get_timeout,
+    is_container_backend,
     parse_output_paths,
     run_subprocess,
 )
 
 
-def build_train_cmd(config, test_dir, output_dir, backend, backend_arg):
+def build_train_cmd(config, test_dir, output_dir, backend, backend_arg, extra_run_args=()):
     """Build the CLI command for the train step."""
     dataset = config["dataset"]
     train_inputs = config["train_inputs"]
 
-    if backend == "docker":
+    if is_container_backend(backend):
         cmd = [
-            "docker",
-            "run",
-            "--rm",
-            "-v",
-            f"{test_dir.resolve()}:/data",
+            *container_run_prefix(backend, test_dir, extra_run_args),
             backend_arg,
             "train",
             "--output-dir",
@@ -96,21 +94,23 @@ def _eval_accuracy(
     test_dir,
     batch_paths=None,
     timeout=60,
+    extra_run_args=(),
 ):
     """Evaluate a checkpoint on a dataset and return accuracy.
 
     If batch_paths is provided, uses those pre-split .bin files directly.
     Otherwise splits the input into batches of eval_batch_size on the fly.
 
-    When using the docker backend the checkpoint must be inside test_dir,
-    because only that directory is mounted into the container.
+    When using a container backend (docker/podman) the checkpoint must be
+    inside test_dir, because only that directory is mounted into the
+    container.
     """
-    if backend == "docker" and not checkpoint_path.is_relative_to(test_dir):
+    if is_container_backend(backend) and not checkpoint_path.is_relative_to(test_dir):
         raise ValueError(
             f"Checkpoint '{checkpoint_path}' is outside the test directory "
-            f"'{test_dir}'. When using the docker backend, the training "
-            f"command must save all checkpoints inside the test directory "
-            f"(i.e. inside the directory passed via --output-dir)."
+            f"'{test_dir}'. When using a container backend ({backend}), the "
+            f"training command must save all checkpoints inside the test "
+            f"directory (i.e. inside the directory passed via --output-dir)."
         )
 
     labels = np.fromfile(labels_bin, dtype=np.float64)
@@ -159,15 +159,16 @@ def _eval_accuracy(
                 "inputs": [str(batch_input_path.relative_to(test_dir))],
             }
             cmd, _ = build_eval_grad_cmd(
-                eval_config, test_dir, batch_output_dir, backend, backend_arg
+                eval_config,
+                test_dir,
+                batch_output_dir,
+                backend,
+                backend_arg,
+                extra_run_args=extra_run_args,
             )
-        elif backend == "docker":
+        elif is_container_backend(backend):
             cmd = [
-                "docker",
-                "run",
-                "--rm",
-                "-v",
-                f"{test_dir.resolve()}:/data",
+                *container_run_prefix(backend, test_dir, extra_run_args),
                 "-v",
                 f"{batch_input_path.resolve()}:/input/{batch_input_path.name}",
                 backend_arg,
@@ -221,6 +222,7 @@ def run_train_test(
     generate=False,
     output_handler=None,
     closed=False,
+    extra_run_args=(),
 ):
     """Custom runner for train tests.
 
@@ -247,7 +249,9 @@ def run_train_test(
 
     # Step 1: Run train command
     timeout = get_timeout(config)
-    cmd, cwd = build_train_cmd(config, test_dir, output_dir, backend, backend_arg)
+    cmd, cwd = build_train_cmd(
+        config, test_dir, output_dir, backend, backend_arg, extra_run_args=extra_run_args
+    )
     try:
         result = run_subprocess(
             cmd,
@@ -357,6 +361,7 @@ def run_train_test(
                 test_dir,
                 batch_paths=cached_batches.get(split_name),
                 timeout=get_timeout({**config, "command": "eval"}),
+                extra_run_args=extra_run_args,
             )
             if error:
                 return {"passed": False, "error": "command failed" if closed else error}

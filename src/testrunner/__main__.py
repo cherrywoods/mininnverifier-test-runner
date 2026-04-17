@@ -10,6 +10,7 @@ Usage:
 
 import argparse
 import json
+import shlex
 import shutil
 import subprocess
 import sys
@@ -40,7 +41,9 @@ def is_closed(test_dir, config):
     return "closed" in str(test_dir) or config.get("access") == "closed"
 
 
-def run_single_test(test_dir, backend, backend_arg, generate=False, output_handler=None):
+def run_single_test(
+    test_dir, backend, backend_arg, generate=False, output_handler=None, extra_run_args=()
+):
     """Run a single test from a directory containing test.json."""
     config = json.loads((test_dir / "test.json").read_text())
 
@@ -64,13 +67,16 @@ def run_single_test(test_dir, backend, backend_arg, generate=False, output_handl
             generate=generate,
             output_handler=output_handler,
             closed=closed,
+            extra_run_args=extra_run_args,
         )
         return _attach_score(config, test_result)
 
     if command not in COMMANDS:
         return {"passed": False, "error": f"unknown command: {command}"}
 
-    cmd, cwd = COMMANDS[command](config, test_dir, output_dir, backend, backend_arg)
+    cmd, cwd = COMMANDS[command](
+        config, test_dir, output_dir, backend, backend_arg, extra_run_args=extra_run_args
+    )
     timeout = get_timeout(config)
     try:
         result = run_subprocess(
@@ -135,7 +141,9 @@ def run_single_test(test_dir, backend, backend_arg, generate=False, output_handl
     )
 
 
-def run_tests(root_dir, backend, backend_arg, generate=False, output_handler=None):
+def run_tests(
+    root_dir, backend, backend_arg, generate=False, output_handler=None, extra_run_args=()
+):
     """Discover and run all tests under root_dir.
 
     Returns a flat list of (test_path, result_dict) tuples.
@@ -170,7 +178,12 @@ def run_tests(root_dir, backend, backend_arg, generate=False, output_handler=Non
             output_handler.test_starting(test_path, i + 1, total)
 
         test_result = run_single_test(
-            test_dir, backend, backend_arg, generate, output_handler=output_handler
+            test_dir,
+            backend,
+            backend_arg,
+            generate,
+            output_handler=output_handler,
+            extra_run_args=extra_run_args,
         )
         results.append((test_path, test_result))
 
@@ -199,8 +212,10 @@ def run_tests(root_dir, backend, backend_arg, generate=False, output_handler=Non
 
 def main():
     parser = argparse.ArgumentParser(description="Run a mininnverifier test.")
-    parser.add_argument("backend", choices=["docker", "local"])
-    parser.add_argument("backend_arg", type=str, help="Docker image name or local command")
+    parser.add_argument("backend", choices=["docker", "podman", "local"])
+    parser.add_argument(
+        "backend_arg", type=str, help="Container image name (docker/podman) or local command"
+    )
     parser.add_argument("test_dir", type=str)
     parser.add_argument(
         "--generate", action="store_true", help="Generate expected outputs instead of checking"
@@ -211,6 +226,16 @@ def main():
         default="cli",
         help="Output mode: cli (default) for interactive display, json for JSONL",
     )
+    parser.add_argument(
+        "--extra-run-args",
+        type=str,
+        default="",
+        help=(
+            "Extra arguments passed through to 'docker run'/'podman run' "
+            "(e.g. '--network=none --memory=1g --read-only'). "
+            "Shell-quoted; ignored for the 'local' backend."
+        ),
+    )
     args = parser.parse_args()
 
     if args.output == "json":
@@ -218,8 +243,15 @@ def main():
     else:
         handler = CliOutputHandler()
 
+    extra_run_args = tuple(shlex.split(args.extra_run_args)) if args.extra_run_args else ()
+
     results = run_tests(
-        args.test_dir, args.backend, args.backend_arg, args.generate, output_handler=handler
+        args.test_dir,
+        args.backend,
+        args.backend_arg,
+        args.generate,
+        output_handler=handler,
+        extra_run_args=extra_run_args,
     )
     if any(not r["passed"] for _, r in results):
         sys.exit(1)

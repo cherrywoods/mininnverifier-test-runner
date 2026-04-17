@@ -50,10 +50,12 @@ def run_bench_eval(
     generate=False,
     output_handler=None,
     closed=False,
+    extra_run_args=(),
 ):
     return _run_benchmark(
         test_dir, config, output_dir, backend, backend_arg,
         mode="eval", generate=generate, output_handler=output_handler, closed=closed,
+        extra_run_args=extra_run_args,
     )
 
 
@@ -66,16 +68,18 @@ def run_bench_grad(
     generate=False,
     output_handler=None,
     closed=False,
+    extra_run_args=(),
 ):
     return _run_benchmark(
         test_dir, config, output_dir, backend, backend_arg,
         mode="grad", generate=generate, output_handler=output_handler, closed=closed,
+        extra_run_args=extra_run_args,
     )
 
 
 def _run_benchmark(
     test_dir, config, output_dir, backend, backend_arg, mode,
-    generate=False, output_handler=None, closed=False,
+    generate=False, output_handler=None, closed=False, extra_run_args=(),
 ):
     n_repeats = config.get("n_repeats", 30)
     n_warmup = config.get("n_warmup", 3)
@@ -83,7 +87,9 @@ def _run_benchmark(
     timeout = get_timeout(config)
 
     # Build the command once — all repetitions use the same arguments.
-    cmd, cwd = build_eval_grad_cmd(config, test_dir, output_dir, backend, backend_arg)
+    cmd, cwd = build_eval_grad_cmd(
+        config, test_dir, output_dir, backend, backend_arg, extra_run_args=extra_run_args
+    )
 
     # Warm-up runs (untimed, also validates the command works).
     for i in range(n_warmup):

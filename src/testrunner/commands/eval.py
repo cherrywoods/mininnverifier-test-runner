@@ -5,5 +5,7 @@
 from .common import build_eval_grad_cmd
 
 
-def build_eval_cmd(config, test_dir, output_dir, backend, backend_arg):
-    return build_eval_grad_cmd(config, test_dir, output_dir, backend, backend_arg)
+def build_eval_cmd(config, test_dir, output_dir, backend, backend_arg, extra_run_args=()):
+    return build_eval_grad_cmd(
+        config, test_dir, output_dir, backend, backend_arg, extra_run_args=extra_run_args
+    )

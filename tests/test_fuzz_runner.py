@@ -114,6 +114,20 @@ def test_build_cmd_docker_eval(tmp_path):
     assert "eval" in cmd
 
 
+def test_build_cmd_podman_eval(tmp_path):
+    network = tmp_path / "net.mininn"
+    inp = tmp_path / "a.bin"
+    out = tmp_path / "output"
+    cmd = _build_cmd(
+        "eval", network, [inp], out, "podman", "myimage", tmp_path,
+        extra_run_args=("--network=none",),
+    )
+    assert cmd[0] == "podman"
+    assert "myimage" in cmd
+    assert "eval" in cmd
+    assert "--network=none" in cmd
+
+
 def test_build_cmd_local_grad(tmp_path):
     network = tmp_path / "net.mininn"
     cmd = _build_cmd("grad", network, [], tmp_path / "out", "local", "sut", tmp_path)
