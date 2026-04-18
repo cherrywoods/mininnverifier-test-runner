@@ -189,6 +189,7 @@ def _run_fuzz(
     @settings(
         max_examples=n_trials,
         database=None,
+        deadline=None,
         phases=[Phase.explicit, Phase.generate],
         suppress_health_check=list(HealthCheck),
     )
