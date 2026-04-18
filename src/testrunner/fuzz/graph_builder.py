@@ -72,8 +72,6 @@ ALL_PRIMITIVES = [
 UNSAFE_PRIMITIVES = {"log", "sqrt", "reciprocal", "exp", "elu", "gelu"}
 SAFE_PRIMITIVES = [p for p in ALL_PRIMITIVES if p not in UNSAFE_PRIMITIVES]
 
-_LEAKY_RELU_SLOPES = [0.01, 0.05, 0.1, 0.2, 0.3]
-
 
 # ---------------------------------------------------------------------------
 # Graph construction
@@ -151,17 +149,6 @@ def _try_apply(prim_name, available, draw, var_counter, const_counter, constants
         out_shape = inp.shape
         out_var = Var(name=_var_name(var_counter), shape=out_shape)
         eqn = Equation(prim_name, [inp], out_var)
-        return eqn, out_var, new_consts, var_counter + 1, const_counter
-
-<<<<<<< HEAD
-    elif prim_name in UNARY_ACTIVATIONS:
-        inp = _pick(available)
-        out_var = Var(name=_var_name(var_counter), shape=inp.shape)
-        if prim_name == "leaky_relu":
-            options = {"slope": _pick(_LEAKY_RELU_SLOPES)}
-        else:
-            options = {}
-        eqn = Equation(prim_name, [inp], out_var, options)
         return eqn, out_var, new_consts, var_counter + 1, const_counter
 
     elif prim_name == "pad":
