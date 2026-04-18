@@ -221,6 +221,8 @@ def main():
     results = run_tests(
         args.test_dir, args.backend, args.backend_arg, args.generate, output_handler=handler
     )
+    if not results and args.output == "cli":
+        print(f"No tests found in {args.test_dir}", file=sys.stderr)
     if any(not r["passed"] for _, r in results):
         sys.exit(1)
 

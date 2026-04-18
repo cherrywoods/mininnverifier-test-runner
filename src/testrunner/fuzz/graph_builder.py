@@ -54,9 +54,11 @@ class Graph:
 # ---------------------------------------------------------------------------
 
 UNARY_ELEMENTWISE = ["neg", "reciprocal", "relu", "square", "sqrt", "exp", "log"]
+UNARY_ELEMENTWISE_WITH_OPTS = ["leaky_relu", "elu", "gelu"]
 BINARY_ELEMENTWISE = ["add", "mul"]
 ALL_PRIMITIVES = [
     *UNARY_ELEMENTWISE,
+    *UNARY_ELEMENTWISE_WITH_OPTS,
     *BINARY_ELEMENTWISE,
     "dot",
     "where",
@@ -64,8 +66,11 @@ ALL_PRIMITIVES = [
     "moveaxis",
     "reshape",
     "reduce_sum",
+    "pad",
+    "conv",
+    "sumpool",
 ]
-UNSAFE_PRIMITIVES = {"log", "sqrt", "reciprocal", "exp"}
+UNSAFE_PRIMITIVES = {"log", "sqrt", "reciprocal", "exp", "elu", "gelu"}
 SAFE_PRIMITIVES = [p for p in ALL_PRIMITIVES if p not in UNSAFE_PRIMITIVES]
 
 
@@ -145,6 +150,17 @@ def _try_apply(prim_name, available, draw, var_counter, const_counter, constants
         out_shape = inp.shape
         out_var = Var(name=_var_name(var_counter), shape=out_shape)
         eqn = Equation(prim_name, [inp], out_var)
+        return eqn, out_var, new_consts, var_counter + 1, const_counter
+
+    elif prim_name in UNARY_ELEMENTWISE_WITH_OPTS:
+        inp = _pick(available)
+        out_var = Var(name=_var_name(var_counter), shape=inp.shape)
+        options = {}
+        if prim_name == "leaky_relu":
+            options["slope"] = draw(
+                st.floats(min_value=0.01, max_value=0.5, allow_nan=False, allow_infinity=False)
+            )
+        eqn = Equation(prim_name, [inp], out_var, options)
         return eqn, out_var, new_consts, var_counter + 1, const_counter
 
     elif prim_name in BINARY_ELEMENTWISE:
@@ -245,6 +261,74 @@ def _try_apply(prim_name, available, draw, var_counter, const_counter, constants
             out_shape = ()
         out_var = Var(name=_var_name(var_counter), shape=out_shape)
         eqn = Equation(prim_name, [inp], out_var, {"axes": (axis,)})
+        return eqn, out_var, new_consts, var_counter + 1, const_counter
+
+    elif prim_name == "pad":
+        inp = _pick(available)
+        ndim = len(inp.shape)
+        n_axes = min(ndim, draw(st.integers(min_value=1, max_value=2)))
+        axes = tuple(range(-n_axes, 0))
+        left = draw(st.integers(min_value=0, max_value=3))
+        right = draw(st.integers(min_value=0, max_value=3))
+        mid = draw(st.integers(min_value=0, max_value=2))
+        value = draw(
+            st.floats(min_value=-1.0, max_value=1.0, allow_nan=False, allow_infinity=False)
+        )
+        out_shape = list(inp.shape)
+        for ax in axes:
+            s = out_shape[ax]
+            out_shape[ax] = left + s + (s - 1) * mid + right
+        out_var = Var(name=_var_name(var_counter), shape=tuple(out_shape))
+        options = {"config": (left, right, mid), "axes": axes, "value": value}
+        eqn = Equation(prim_name, [inp], out_var, options)
+        return eqn, out_var, new_consts, var_counter + 1, const_counter
+
+    elif prim_name == "conv":
+        candidates = [v for v in available if len(v.shape) >= 3]
+        if not candidates:
+            return None
+        inp = _pick(candidates)
+        n, c, *spatial = inp.shape
+        max_k = min(min(spatial), 3)
+        if max_k < 1:
+            return None
+        k_spatial = tuple(
+            draw(st.integers(min_value=1, max_value=max_k)) for _ in spatial
+        )
+        f = draw(st.integers(min_value=1, max_value=4))
+        kernel_shape = (f, c) + k_spatial
+        kernel, const_counter = _make_constant(
+            kernel_shape, const_counter, draw, new_consts
+        )
+        out_pre = tuple(s - k + 1 for s, k in zip(spatial, k_spatial))
+        if any(d < 1 for d in out_pre):
+            return None
+        stride = draw(st.integers(min_value=1, max_value=min(out_pre)))
+        out_spatial = tuple((d - 1) // stride + 1 for d in out_pre)
+        out_shape = (n, f) + out_spatial
+        out_var = Var(name=_var_name(var_counter), shape=out_shape)
+        eqn = Equation(prim_name, [inp, kernel], out_var, {"stride": stride})
+        return eqn, out_var, new_consts, var_counter + 1, const_counter
+
+    elif prim_name == "sumpool":
+        candidates = [v for v in available if len(v.shape) >= 3]
+        if not candidates:
+            return None
+        inp = _pick(candidates)
+        n, c, *spatial = inp.shape
+        max_w = min(min(spatial), 4)
+        if max_w < 1:
+            return None
+        window_size = draw(st.integers(min_value=1, max_value=max_w))
+        out_pre = tuple(s - window_size + 1 for s in spatial)
+        if any(d < 1 for d in out_pre):
+            return None
+        stride = draw(st.integers(min_value=1, max_value=min(out_pre)))
+        out_spatial = tuple((d - 1) // stride + 1 for d in out_pre)
+        out_shape = (n, c) + out_spatial
+        out_var = Var(name=_var_name(var_counter), shape=out_shape)
+        options = {"window_size": window_size, "stride": stride}
+        eqn = Equation(prim_name, [inp], out_var, options)
         return eqn, out_var, new_consts, var_counter + 1, const_counter
 
     return None
