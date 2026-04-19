@@ -49,6 +49,44 @@ from testrunner.commands.common import (
 )
 
 
+class _TrainProgressHandler:
+    """Wrap an output handler to show a live checkpoint-count indicator.
+
+    The train command prints ``eval_batch_size: N`` followed by one
+    checkpoint path per line. We forward every line to the inner handler
+    and, on a TTY, overwrite a single status line showing how many
+    checkpoints have been written so far.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+        self._count = 0
+        self._seen_header = False
+        self._tty = sys.stderr.isatty()
+        self._active = False
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def test_stdout_line(self, line):
+        if self._inner is not None:
+            self._inner.test_stdout_line(line)
+        stripped = line.strip()
+        if not stripped:
+            return
+        if not self._seen_header and stripped.startswith("eval_batch_size:"):
+            self._seen_header = True
+            return
+        self._count += 1
+        if self._tty:
+            suffix = "" if self._count == 1 else "s"
+            msg = f"  train [{self._count} checkpoint{suffix} written]"
+            prefix = "\033[1A\r\033[2K" if self._active else ""
+            sys.stderr.write(f"{prefix}{msg}\n")
+            sys.stderr.flush()
+            self._active = True
+
+
 def build_train_cmd(config, test_dir, output_dir, backend, backend_arg, extra_run_args=()):
     """Build the CLI command for the train step."""
     dataset = config["dataset"]
@@ -252,13 +290,16 @@ def run_train_test(
     cmd, cwd = build_train_cmd(
         config, test_dir, output_dir, backend, backend_arg, extra_run_args=extra_run_args
     )
+    progress_handler = (
+        _TrainProgressHandler(output_handler) if output_handler is not None else None
+    )
     try:
         result = run_subprocess(
             cmd,
             cwd=cwd,
             timeout=timeout,
             log_file=None if closed else output_dir / "stdout.log",
-            output_handler=output_handler,
+            output_handler=progress_handler,
         )
     except subprocess.TimeoutExpired:
         return {"passed": False, "error": f"train command timed out after {timeout}s"}

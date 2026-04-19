@@ -23,8 +23,8 @@ def check_close_to_expected(test_dir, config, output_files, closed=False):
             return {
                 "passed": False,
                 "error": (
-                    f"{out_file.name}: shape mismatch: "
-                    f"actual {actual.shape} vs expected {expected.shape}"
+                    f"{out_file.name}: element count mismatch: "
+                    f"actual {actual.size} vs expected {expected.size}"
                 ),
             }
 

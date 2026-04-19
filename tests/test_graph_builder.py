@@ -644,24 +644,24 @@ def test_try_apply_conv_no_1d_candidates():
     assert result is None
 
 
-def test_try_apply_sumpool_output_shape():
-    # NCHW input to exercise the typical case; sumpool operates on last two axes.
+def test_try_apply_avgpool_output_shape():
+    # NCHW input to exercise the typical case; avgpool operates on last two axes.
     x = Var("a", (2, 1, 10, 10))
     # draw order: pick x, window=4, stride=3
     draw = _fixed_draw(x, 4, 3)
-    result = _try_apply("sumpool", [x], draw, 1, 0, {})
+    result = _try_apply("avgpool", [x], draw, 1, 0, {})
     assert result is not None
     eqn, out_var, _, _, _ = result
     # out_h = out_w = (10 - 4) // 3 + 1 = 3
     assert out_var.shape == (2, 1, 3, 3)
-    assert eqn.options == {"window_size": 4, "stride": 3}
+    assert eqn.options == {"window_size": (1, 1, 4, 4), "stride": (1, 1, 3, 3)}
 
 
-def test_try_apply_sumpool_no_1d_candidates():
-    """sumpool requires ndim >= 2 (at least 2 spatial axes); 1-D inputs are rejected."""
+def test_try_apply_avgpool_no_1d_candidates():
+    """avgpool requires ndim >= 2 (at least 2 spatial axes); 1-D inputs are rejected."""
     x1 = Var("a", ())
     x2 = Var("b", (10,))
-    result = _try_apply("sumpool", [x1, x2], _fixed_draw(x2), 1, 0, {})
+    result = _try_apply("avgpool", [x1, x2], _fixed_draw(x2), 1, 0, {})
     assert result is None
 
 
@@ -695,7 +695,7 @@ def test_generate_graph_last_axis_ops_only(data):
             assert eqn.inputs[1].shape[1] == eqn.inputs[0].shape[1]
             assert eqn.output.shape[1] == eqn.inputs[1].shape[0]
         else:
-            # sumpool operates on last two spatial axes, preserves leading dims
+            # avgpool operates on last two spatial axes, preserves leading dims
             assert len(eqn.inputs[0].shape) >= 2
             assert eqn.output.shape[:-2] == eqn.inputs[0].shape[:-2]
 

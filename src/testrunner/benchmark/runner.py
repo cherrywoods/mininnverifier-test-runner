@@ -87,8 +87,10 @@ def _run_benchmark(
     timeout = get_timeout(config)
 
     # Build the command once — all repetitions use the same arguments.
+    # Use mode (eval/grad) for the SUT subcommand, not "bench_eval"/"bench_grad".
+    sut_config = {**config, "command": mode}
     cmd, cwd = build_eval_grad_cmd(
-        config, test_dir, output_dir, backend, backend_arg, extra_run_args=extra_run_args
+        sut_config, test_dir, output_dir, backend, backend_arg, extra_run_args=extra_run_args
     )
 
     # Warm-up runs (untimed, also validates the command works).

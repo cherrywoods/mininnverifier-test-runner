@@ -56,7 +56,7 @@ class Graph:
 UNARY_ELEMENTWISE = ["neg", "reciprocal", "relu", "square", "sqrt", "exp", "log"]
 UNARY_ACTIVATIONS = ["leaky_relu", "elu", "gelu"]
 BINARY_ELEMENTWISE = ["add", "mul"]
-LAST_AXES_OPS = ["pad", "conv", "sumpool"]
+LAST_AXES_OPS = ["pad", "conv", "avgpool"]
 ALL_PRIMITIVES = [
     *UNARY_ELEMENTWISE,
     *UNARY_ACTIVATIONS,
@@ -151,29 +151,6 @@ def _try_apply(prim_name, available, draw, var_counter, const_counter, constants
         eqn = Equation(prim_name, [inp], out_var)
         return eqn, out_var, new_consts, var_counter + 1, const_counter
 
-    elif prim_name == "pad":
-        candidates = [v for v in available if len(v.shape) >= 1]
-        if not candidates:
-            return None
-        inp = _pick(candidates)
-        n = inp.shape[-1]
-        lp = draw(st.integers(min_value=0, max_value=4))
-        rp = draw(st.integers(min_value=0, max_value=4))
-        dilation = draw(st.integers(min_value=1, max_value=3))
-        dil_len = n + (n - 1) * (dilation - 1)
-        out_last = dil_len + lp + rp
-        if out_last < 1:
-            return None
-        out_shape = inp.shape[:-1] + (out_last,)
-        out_var = Var(name=_var_name(var_counter), shape=out_shape)
-        eqn = Equation(
-            prim_name,
-            [inp],
-            out_var,
-            {"config": (lp, rp, dilation), "value": 0.0},
-        )
-        return eqn, out_var, new_consts, var_counter + 1, const_counter
-
     elif prim_name == "conv":
         # NCHW × OIHW 2-D convolution (matches jax.lax.conv). Input: (N, C_in, H, W);
         # kernel: (C_out, C_in, kH, kW); output: (N, C_out, H', W').
@@ -201,8 +178,8 @@ def _try_apply(prim_name, available, draw, var_counter, const_counter, constants
         eqn = Equation(prim_name, [inp, kernel], out_var, {"stride": stride})
         return eqn, out_var, new_consts, var_counter + 1, const_counter
 
-    elif prim_name == "sumpool":
-        # 2-D sum pooling on the last two axes with a square window.
+    elif prim_name == "avgpool":
+        # 2-D average pooling on the last two axes with a square window.
         candidates = [
             v for v in available if len(v.shape) >= 2 and v.shape[-1] >= 1 and v.shape[-2] >= 1
         ]
@@ -214,13 +191,15 @@ def _try_apply(prim_name, available, draw, var_counter, const_counter, constants
         max_stride = min(h - window + 1, w - window + 1)
         if max_stride < 1:
             return None
-        stride = draw(st.integers(min_value=1, max_value=max_stride))
-        out_h = (h - window) // stride + 1
-        out_w = (w - window) // stride + 1
+        s = draw(st.integers(min_value=1, max_value=max_stride))
+        out_h = (h - window) // s + 1
+        out_w = (w - window) // s + 1
         out_shape = inp.shape[:-2] + (out_h, out_w)
         out_var = Var(name=_var_name(var_counter), shape=out_shape)
+        window_size = (1,) * (len(inp.shape) - 2) + (window, window)
+        stride = (1,) * (len(inp.shape) - 2) + (s, s)
         eqn = Equation(
-            prim_name, [inp], out_var, {"window_size": window, "stride": stride}
+            prim_name, [inp], out_var, {"window_size": window_size, "stride": stride}
         )
         return eqn, out_var, new_consts, var_counter + 1, const_counter
 
@@ -380,27 +359,6 @@ def _try_apply(prim_name, available, draw, var_counter, const_counter, constants
         out_shape = (n, f) + out_spatial
         out_var = Var(name=_var_name(var_counter), shape=out_shape)
         eqn = Equation(prim_name, [inp, kernel], out_var, {"stride": stride})
-        return eqn, out_var, new_consts, var_counter + 1, const_counter
-
-    elif prim_name == "sumpool":
-        candidates = [v for v in available if len(v.shape) >= 3]
-        if not candidates:
-            return None
-        inp = _pick(candidates)
-        n, c, *spatial = inp.shape
-        max_w = min(min(spatial), 4)
-        if max_w < 1:
-            return None
-        window_size = draw(st.integers(min_value=1, max_value=max_w))
-        out_pre = tuple(s - window_size + 1 for s in spatial)
-        if any(d < 1 for d in out_pre):
-            return None
-        stride = draw(st.integers(min_value=1, max_value=min(out_pre)))
-        out_spatial = tuple((d - 1) // stride + 1 for d in out_pre)
-        out_shape = (n, c) + out_spatial
-        out_var = Var(name=_var_name(var_counter), shape=out_shape)
-        options = {"window_size": window_size, "stride": stride}
-        eqn = Equation(prim_name, [inp], out_var, options)
         return eqn, out_var, new_consts, var_counter + 1, const_counter
 
     return None

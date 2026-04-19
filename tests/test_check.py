@@ -73,7 +73,7 @@ def test_close_to_expected_shape_mismatch(tmp_path):
     config = {"expected_outputs": ["expected.bin"]}
     result = check_close_to_expected(tmp_path, config, [tmp_path / "actual.bin"])
     assert result["passed"] is False
-    assert "shape mismatch" in result["error"]
+    assert "element count mismatch" in result["error"]
 
 
 def test_close_to_expected_wrong_file_count(tmp_path):
