@@ -13,6 +13,7 @@ from testrunner.scoring import (
     compute_score,
     exponential,
     proportional,
+    speed,
 )
 
 
@@ -174,6 +175,113 @@ def test_proportional_bonus_all_pass():
     )
     assert score == 10.0
     assert bonus == 5.0
+
+
+# ---------------------------------------------------------------------------
+# exponential with baseline/ceiling
+# ---------------------------------------------------------------------------
+
+
+def test_exponential_baseline_clips_below():
+    score, bonus = exponential(
+        10, {"best_test_accuracy": 0.5}, baseline=0.92
+    )
+    assert score == 0.0
+    assert bonus == 0.0
+
+
+def test_exponential_baseline_at_baseline_is_zero():
+    score, bonus = exponential(
+        10, {"best_test_accuracy": 0.92}, baseline=0.92
+    )
+    assert score == 0.0
+
+
+def test_exponential_baseline_at_target_is_full():
+    score, bonus = exponential(
+        10, {"best_test_accuracy": 1.0}, baseline=0.92
+    )
+    assert abs(score - 10.0) < 1e-10
+
+
+def test_exponential_baseline_with_bonus_threshold():
+    # baseline=0.92, target=0.98 (=bonus_threshold), ceiling=0.999
+    score, bonus = exponential(
+        10,
+        {"best_test_accuracy": 0.98},
+        bonus_points=5,
+        bonus_threshold=0.98,
+        baseline=0.92,
+        ceiling=0.999,
+    )
+    assert abs(score - 10.0) < 1e-10
+    assert bonus == 0.0
+
+
+def test_exponential_bonus_ceiling_cap():
+    score, bonus = exponential(
+        10,
+        {"best_test_accuracy": 0.999},
+        bonus_points=5,
+        bonus_threshold=0.98,
+        baseline=0.92,
+        ceiling=0.999,
+    )
+    assert abs(score - 10.0) < 1e-10
+    assert abs(bonus - 5.0) < 1e-10
+
+
+# ---------------------------------------------------------------------------
+# speed
+# ---------------------------------------------------------------------------
+
+
+def test_speed_passed_no_speedup():
+    score, bonus = speed(
+        5, {"passed": True, "slowdown": 1.5}, tier1_bonus=4, tier2_bonus=10
+    )
+    assert score == 5
+    assert bonus == 0.0
+
+
+def test_speed_failed():
+    score, bonus = speed(
+        5, {"passed": False, "slowdown": 3.0}, tier1_bonus=4, tier2_bonus=10
+    )
+    assert score == 0.0
+    assert bonus == 0.0
+
+
+def test_speed_tier1_only():
+    score, bonus = speed(
+        5, {"passed": True, "slowdown": 0.90}, tier1_bonus=4, tier2_bonus=10
+    )
+    assert score == 5
+    assert bonus == 4.0
+
+
+def test_speed_both_tiers():
+    score, bonus = speed(
+        5, {"passed": True, "slowdown": 0.50}, tier1_bonus=4, tier2_bonus=10
+    )
+    assert score == 5
+    assert bonus == 14.0
+
+
+def test_speed_just_above_tier1_threshold():
+    # slowdown=0.96 is not 5% faster; no bonus.
+    score, bonus = speed(
+        5, {"passed": True, "slowdown": 0.96}, tier1_bonus=4, tier2_bonus=10
+    )
+    assert bonus == 0.0
+
+
+def test_speed_missing_slowdown():
+    score, bonus = speed(
+        5, {"passed": True}, tier1_bonus=4, tier2_bonus=10
+    )
+    assert score == 5
+    assert bonus == 0.0
 
 
 # ---------------------------------------------------------------------------

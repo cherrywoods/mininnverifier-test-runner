@@ -11,14 +11,20 @@ test.json format:
     "scoring": {"function": "binary"}           # default for eval/grad
     "scoring": {"function": "exponential", "k": 5}  # for train
     "scoring": {"function": "proportional"}      # for fuzz
+    "scoring": {"function": "speed",            # default for bench_eval/grad
+                "tier1_bonus": 4, "tier2_bonus": 10}
 
 Bonus points:
     "points": 10,
     "bonus_points": 5,
-    "scoring": {"function": "exponential", "k": 5, "bonus_threshold": 0.9}
+    "scoring": {"function": "exponential", "k": 5, "bonus_threshold": 0.9,
+                "baseline": 0.92, "ceiling": 0.999}
 
-    Base points are awarded up to the bonus_threshold, bonus points beyond it.
-    A bonus-only test uses "points": 0 (or omits it) with "bonus_points": 5.
+    For exponential scoring, accuracy is rescaled within [baseline, target]
+    where target is bonus_threshold when set (else 1.0).  Base points are
+    awarded up to the target; bonus points scale from the target up to
+    ceiling.  A bonus-only test uses "points": 0 (or omits it) with
+    "bonus_points": 5.
 """
 
 import math
@@ -41,34 +47,89 @@ def _exp_curve(x, k):
     return (math.exp(k * x) - 1) / (math.exp(k) - 1)
 
 
-def exponential(max_points, result, k=5, bonus_points=0, bonus_threshold=None):
+def exponential(
+    max_points,
+    result,
+    k=5,
+    bonus_points=0,
+    bonus_threshold=None,
+    baseline=0.0,
+    ceiling=1.0,
+):
     """Exponential scoring based on best_test_accuracy.
 
-    Maps accuracy in [0, 1] to [0, max_points] using:
-        max_points * (exp(k * accuracy) - 1) / (exp(k) - 1)
+    Accuracy is rescaled within [baseline, target], where ``target`` is
+    ``bonus_threshold`` if bonus scoring applies, otherwise ``1.0``.
+    Accuracy at or below ``baseline`` gives 0 points; accuracy at or above
+    ``target`` gives full ``max_points``.  The rescaled fraction is passed
+    through an exponential curve ``(exp(k*x) - 1) / (exp(k) - 1)`` so that
+    higher k concentrates more of the reward near the target.
 
-    Higher k rewards improvements near 100% more heavily.
-
-    When bonus_points and bonus_threshold are set, base points are awarded
-    for accuracy in [0, bonus_threshold] and bonus points for accuracy in
-    (bonus_threshold, 1.0].
+    When ``bonus_points`` and ``bonus_threshold`` are set, accuracy beyond
+    ``bonus_threshold`` maps through the same exponential curve onto
+    ``[0, bonus_points]``, reaching full bonus at ``ceiling``.
     """
     accuracy = result.get("best_test_accuracy", 0.0)
 
-    if bonus_points > 0 and bonus_threshold is not None and bonus_threshold < 1.0:
-        # Base score: accuracy up to bonus_threshold maps to [0, max_points]
-        base_frac = min(accuracy / bonus_threshold, 1.0) if bonus_threshold > 0 else 1.0
-        score = max_points * _exp_curve(base_frac, k)
-        # Bonus: accuracy beyond bonus_threshold maps to [0, bonus_points]
-        if accuracy > bonus_threshold:
-            bonus_frac = (accuracy - bonus_threshold) / (1.0 - bonus_threshold)
-            bonus = bonus_points * _exp_curve(bonus_frac, k)
-        else:
-            bonus = 0.0
+    has_bonus = (
+        bonus_points > 0 and bonus_threshold is not None and bonus_threshold < 1.0
+    )
+    target = bonus_threshold if has_bonus else 1.0
+
+    if target > baseline:
+        base_frac = max(0.0, min(1.0, (accuracy - baseline) / (target - baseline)))
     else:
-        score = max_points * _exp_curve(accuracy, k)
+        base_frac = 1.0 if accuracy >= target else 0.0
+    score = max_points * _exp_curve(base_frac, k)
+
+    if has_bonus and accuracy > bonus_threshold:
+        if ceiling > bonus_threshold:
+            bonus_frac = max(
+                0.0, min(1.0, (accuracy - bonus_threshold) / (ceiling - bonus_threshold))
+            )
+        else:
+            bonus_frac = 1.0
+        bonus = bonus_points * _exp_curve(bonus_frac, k)
+    else:
         bonus = 0.0
 
+    return score, bonus
+
+
+def speed(
+    max_points,
+    result,
+    bonus_points=0,
+    bonus_threshold=None,
+    tier1_bonus=0,
+    tier2_bonus=0,
+    tier1_speedup=0.05,
+    tier2_speedup=0.25,
+):
+    """Speed scoring with two-tier speedup bonus.
+
+    Base points are awarded in full if the benchmark passed (the SUT ran
+    within ``max_slowdown`` of the reference).  Two independent bonuses are
+    awarded on top when the SUT is faster than the reference:
+
+    * tier 1 (default ``tier1_speedup=0.05``): slowdown <= 0.95
+      (at least 5% faster than the reference)
+    * tier 2 (default ``tier2_speedup=0.25``): slowdown <= 0.75
+      (at least 25% faster than the reference)
+
+    Bonuses are cumulative — a 30% speedup earns ``tier1_bonus + tier2_bonus``.
+    ``bonus_points`` is carried through for display as the maximum possible
+    bonus and should equal ``tier1_bonus + tier2_bonus``.
+    """
+    passed = result.get("passed")
+    score = max_points if passed else 0.0
+    slowdown = result.get("slowdown")
+    bonus = 0.0
+    if slowdown is not None:
+        if slowdown <= 1.0 - tier1_speedup:
+            bonus += tier1_bonus
+        if slowdown <= 1.0 - tier2_speedup:
+            bonus += tier2_bonus
     return score, bonus
 
 
@@ -103,6 +164,7 @@ SCORING_FUNCTIONS = {
     "binary": binary,
     "exponential": exponential,
     "proportional": proportional,
+    "speed": speed,
 }
 
 DEFAULT_SCORING = {
@@ -111,8 +173,8 @@ DEFAULT_SCORING = {
     "train": "exponential",
     "fuzz_eval": "proportional",
     "fuzz_grad": "proportional",
-    "bench_eval": "binary",
-    "bench_grad": "binary",
+    "bench_eval": "speed",
+    "bench_grad": "speed",
 }
 
 
