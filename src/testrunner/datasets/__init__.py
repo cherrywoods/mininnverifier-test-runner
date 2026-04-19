@@ -1,8 +1,9 @@
 # Copyright (c) 2026 by David Boetius
 # Licensed under the MIT License.
 from .mnist import prepare_mnist
+from .mnist_variant import prepare_mnist_variant
 
-DATASETS = {"mnist": prepare_mnist}
+DATASETS = {"mnist": prepare_mnist, "mnist_variant": prepare_mnist_variant}
 
 
 def prepare_dataset(source_dataset):
