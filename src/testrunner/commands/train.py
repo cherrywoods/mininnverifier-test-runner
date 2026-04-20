@@ -49,6 +49,17 @@ from testrunner.commands.common import (
 )
 
 
+def _translate_container_path(path_str, container_root):
+    """Map an in-container /data path to its host equivalent."""
+    if container_root is None:
+        return path_str
+    if path_str == "/data":
+        return str(container_root)
+    if path_str.startswith("/data/"):
+        return str(Path(container_root) / path_str[len("/data/"):])
+    return path_str
+
+
 class _TrainProgressHandler:
     """Wrap an output handler to show a live checkpoint-count indicator.
 
@@ -93,14 +104,35 @@ def build_train_cmd(config, test_dir, output_dir, backend, backend_arg, extra_ru
     train_inputs = config["train_inputs"]
 
     if is_container_backend(backend):
+        # Inputs under test_dir are reachable via /data (the test_dir bind
+        # mount). Absolute inputs outside test_dir (e.g. cached dataset
+        # files injected by run_train_test when source_dataset is set)
+        # need their own read-only bind mount.
+        extra_mounts = []
+        cache_mounts = {}  # host parent dir -> in-container mount point
+        rewritten_inputs = []
+        for i in train_inputs:
+            p = Path(i)
+            if p.is_absolute() and not p.is_relative_to(test_dir):
+                parent = str(p.parent)
+                if parent not in cache_mounts:
+                    mount_point = f"/datasets_{len(cache_mounts)}"
+                    cache_mounts[parent] = mount_point
+                    extra_mounts.extend(["-v", f"{parent}:{mount_point}:ro"])
+                rewritten_inputs.append(f"{cache_mounts[parent]}/{p.name}")
+            else:
+                rel = p.relative_to(test_dir) if p.is_absolute() else p
+                rewritten_inputs.append(f"/data/{rel}")
+
         cmd = [
             *container_run_prefix(backend, test_dir, extra_run_args),
+            *extra_mounts,
             backend_arg,
             "train",
             "--output-dir",
             f"/data/{output_dir.relative_to(test_dir)}",
             dataset,
-            *[f"/data/{i}" for i in train_inputs],
+            *rewritten_inputs,
         ]
         return cmd, None
     else:
@@ -236,8 +268,12 @@ def _eval_accuracy(
                 f"eval failed on {checkpoint_path.name} batch {batch_idx}: {result.stderr.strip()}"
             )
 
-        # Parse output file paths from stdout
-        output_files, _ = parse_output_paths(result.stdout)
+        # Parse output file paths from stdout. In container mode the SUT
+        # prints /data-rooted paths; translate them to host paths.
+        output_files, _ = parse_output_paths(
+            result.stdout,
+            container_root=test_dir if is_container_backend(backend) else None,
+        )
 
         if not output_files:
             return None, f"eval produced no output for batch {batch_idx}"
@@ -330,9 +366,11 @@ def run_train_test(
         }
     eval_batch_size = int(first_line.split(":", 1)[1].strip())
 
+    container_root = test_dir if is_container_backend(backend) else None
     checkpoint_paths = []
     for line in lines[1:]:
-        p = Path(line)
+        host_path = _translate_container_path(line, container_root)
+        p = Path(host_path)
         if p.exists():
             checkpoint_paths.append(p)
         else:

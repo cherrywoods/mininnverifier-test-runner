@@ -693,6 +693,53 @@ def test_run_train_test_with_source_dataset(tmp_path):
     assert result["passed"] is True
 
 
+def test_run_train_test_docker_checkpoint_path_translation(tmp_path):
+    """Docker backend: checkpoint paths printed as /data/... must resolve to host paths."""
+    test_dir = _make_test_dir(tmp_path, {
+        "command": "train",
+        "dataset": "ds",
+        "in_size": 2,
+        "num_classes": 2,
+        "train_inputs": ["t.bin"],
+        "train_labels": "l.bin",
+        "test_inputs": ["te.bin"],
+        "test_labels": "tl.bin",
+    })
+    actual_dir = test_dir / "actual"
+    actual_dir.mkdir()
+
+    np.zeros(4, dtype=np.float64).tofile(test_dir / "t.bin")
+    np.zeros(4, dtype=np.float64).tofile(test_dir / "l.bin")
+    np.zeros(4, dtype=np.float64).tofile(test_dir / "te.bin")
+    np.zeros(4, dtype=np.float64).tofile(test_dir / "tl.bin")
+
+    # Checkpoint lives under actual/ on the host; student code (running
+    # inside the container) prints the in-container path /data/actual/cp.bin.
+    cp_host = actual_dir / "cp.bin"
+    cp_host.write_bytes(b"cp")
+    container_cp_path = f"/data/{cp_host.relative_to(test_dir)}"
+    train_stdout = f"eval_batch_size: 2\n{container_cp_path}\n"
+
+    captured = {}
+
+    def fake_eval(cp, *a, **kw):
+        captured["cp"] = cp
+        return (0.75, None)
+
+    with patch("testrunner.commands.train.run_subprocess",
+               return_value=SubprocessResult(0, train_stdout, "")):
+        with patch("testrunner.commands.train._eval_accuracy", side_effect=fake_eval):
+            result = run_train_test(
+                test_dir,
+                json.loads((test_dir / "test.json").read_text()),
+                actual_dir,
+                "docker",
+                "myimage",
+            )
+    assert result["passed"] is True
+    assert captured["cp"] == cp_host
+
+
 def test_run_train_test_no_output_closed(tmp_path):
     """closed=True with no output should mask the message."""
     test_dir = _make_test_dir(tmp_path, {
