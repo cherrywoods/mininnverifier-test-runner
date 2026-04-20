@@ -49,8 +49,14 @@ def get_timeout(config):
     return DEFAULT_TIMEOUTS.get(config.get("command", ""), 60)
 
 
-def parse_output_paths(stdout):
+def parse_output_paths(stdout, container_root=None):
     """Parse file paths from subprocess stdout.
+
+    When running inside a container, the student implementation prints
+    in-container paths (rooted at ``/data``) since it has no knowledge of
+    the host-side bind-mount source. *container_root*, when provided,
+    maps ``/data`` -> that host path so the resulting :class:`Path` can be
+    resolved on the host.
 
     Returns (existing_paths, warnings) where warnings list non-existent paths.
     """
@@ -60,7 +66,13 @@ def parse_output_paths(stdout):
         line = line.strip()
         if not line:
             continue
-        p = Path(line)
+        path_str = line
+        if container_root is not None:
+            if path_str == "/data":
+                path_str = str(container_root)
+            elif path_str.startswith("/data/"):
+                path_str = str(Path(container_root) / path_str[len("/data/"):])
+        p = Path(path_str)
         if p.exists():
             paths.append(p)
         else:
