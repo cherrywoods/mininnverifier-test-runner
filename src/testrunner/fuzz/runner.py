@@ -385,8 +385,12 @@ def run_and_check(
         error = f"crash (exit {result.returncode}): {_truncate(stderr)}"
         return {"passed": False, "error": error, "stdout": stdout, "stderr": stderr}
 
-    # Parse output file paths from stdout
-    output_files, _ = parse_output_paths(result.stdout)
+    # Parse output file paths from stdout. In container mode the SUT prints
+    # in-container paths rooted at /data; map them back to the host work_dir.
+    output_files, _ = parse_output_paths(
+        result.stdout,
+        container_root=work_dir if is_container_backend(backend) else None,
+    )
 
     if not output_files:
         error = "no output files produced"

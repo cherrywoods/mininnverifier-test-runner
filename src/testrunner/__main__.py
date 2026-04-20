@@ -17,7 +17,12 @@ import sys
 from pathlib import Path
 
 from testrunner.commands import COMMANDS, RUNNERS, _init_runners, command_sort_key
-from testrunner.commands.common import get_timeout, parse_output_paths, run_subprocess
+from testrunner.commands.common import (
+    get_timeout,
+    is_container_backend,
+    parse_output_paths,
+    run_subprocess,
+)
 from testrunner.check import CHECKS, DEFAULT_CHECKS
 from testrunner.output import CliOutputHandler, JsonOutputHandler
 from testrunner.scoring import compute_score
@@ -103,7 +108,10 @@ def run_single_test(
             },
         )
 
-    output_files, warnings = parse_output_paths(result.stdout)
+    output_files, warnings = parse_output_paths(
+        result.stdout,
+        container_root=test_dir if is_container_backend(backend) else None,
+    )
 
     if generate:
         for out_file in output_files:

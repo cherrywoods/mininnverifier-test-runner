@@ -116,6 +116,34 @@ def test_parse_output_paths_mixed(tmp_path):
     assert len(warnings) == 1
 
 
+def test_parse_output_paths_container_root_rewrite(tmp_path):
+    """In-container /data paths are rewritten to the host bind-mount source."""
+    (tmp_path / "actual").mkdir()
+    out = tmp_path / "actual" / "output_0.bin"
+    out.write_bytes(b"x")
+    stdout = "/data/actual/output_0.bin\n"
+    paths, warnings = parse_output_paths(stdout, container_root=tmp_path)
+    assert paths == [out]
+    assert warnings == []
+
+
+def test_parse_output_paths_container_root_bare_data(tmp_path):
+    """Exact '/data' maps to the container_root itself."""
+    paths, warnings = parse_output_paths("/data", container_root=tmp_path)
+    assert paths == [tmp_path]
+    assert warnings == []
+
+
+def test_parse_output_paths_container_root_missing_file(tmp_path):
+    """Rewritten paths that don't exist on host still become warnings."""
+    stdout = "/data/actual/missing.bin"
+    paths, warnings = parse_output_paths(stdout, container_root=tmp_path)
+    assert paths == []
+    assert len(warnings) == 1
+    # The warning quotes the original (in-container) path.
+    assert "/data/actual/missing.bin" in warnings[0]
+
+
 # ---------------------------------------------------------------------------
 # SubprocessResult
 # ---------------------------------------------------------------------------
