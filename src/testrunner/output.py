@@ -52,16 +52,17 @@ class JsonOutputHandler:
         self, total_passed, total_failed, total_score=0.0, total_max_points=0.0,
         total_bonus=0.0, total_max_bonus=0.0,
     ):
-        if total_max_points > 0 or total_max_bonus > 0:
-            summary = {
-                "event": "summary",
-                "total_score": total_score,
-                "total_max_points": total_max_points,
-            }
-            if total_max_bonus > 0:
-                summary["total_bonus"] = total_bonus
-                summary["total_max_bonus"] = total_max_bonus
-            print(json.dumps(summary), flush=True)
+        summary = {
+            "event": "summary",
+            "total_passed": total_passed,
+            "total_failed": total_failed,
+            "total_score": total_score,
+            "total_max_points": total_max_points,
+        }
+        if total_max_bonus > 0:
+            summary["total_bonus"] = total_bonus
+            summary["total_max_bonus"] = total_max_bonus
+        print(json.dumps(summary), flush=True)
 
 
 class CliOutputHandler:
