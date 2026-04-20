@@ -77,10 +77,16 @@ def test_json_test_finished_drops_failures():
     assert "failures" not in record
 
 
-def test_json_all_finished_is_noop():
+def test_json_all_finished_no_points():
     handler = JsonOutputHandler()
     out = _capture_stdout(lambda: handler.all_finished(5, 2))
-    assert out == ""
+    record = json.loads(out.strip())
+    assert record["event"] == "summary"
+    assert record["total_passed"] == 5
+    assert record["total_failed"] == 2
+    assert record["total_score"] == 0.0
+    assert record["total_max_points"] == 0.0
+    assert "total_bonus" not in record
 
 
 # ---------------------------------------------------------------------------
@@ -277,10 +283,13 @@ def test_json_all_finished_with_score():
 
 
 def test_json_all_finished_zero_max_points():
-    """all_finished with total_max_points=0 should emit no output."""
+    """all_finished with total_max_points=0 should still emit a summary event."""
     handler = JsonOutputHandler()
     out = _capture_stdout(lambda: handler.all_finished(5, 0, total_score=0.0, total_max_points=0.0))
-    assert out.strip() == ""
+    record = json.loads(out.strip())
+    assert record["event"] == "summary"
+    assert record["total_passed"] == 5
+    assert record["total_score"] == 0.0
 
 
 # ---------------------------------------------------------------------------

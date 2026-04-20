@@ -153,6 +153,8 @@ def run_tests(
     # Discover all test directories and sort by command cost (cheap first)
     test_dirs = sorted(p.parent for p in root_dir.rglob("test.json"))
     if not test_dirs:
+        if output_handler is not None:
+            output_handler.all_finished(0, 0)
         return []
 
     def _sort_key(td):

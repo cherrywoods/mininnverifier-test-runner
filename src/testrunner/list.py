@@ -37,6 +37,8 @@ def discover_tests(root_dir):
       report (read from ``test.json``: ``points``/``bonus_points``,
       defaulting to ``0``)
     - ``access`` — ``"open"`` or ``"closed"``
+    - ``description`` — free-form human-readable text from ``test.json``
+      (empty string if the test has no ``description`` field)
     """
     root_dir = Path(root_dir).resolve()
     test_dirs = sorted(p.parent for p in root_dir.rglob("test.json"))
@@ -60,6 +62,7 @@ def discover_tests(root_dir):
             "max_points": config.get("points", 0),
             "max_bonus": config.get("bonus_points", 0),
             "access": _resolve_access(test_dir, config),
+            "description": config.get("description", ""),
         })
 
     return dict(groups)
