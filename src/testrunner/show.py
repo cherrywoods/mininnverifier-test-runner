@@ -55,6 +55,9 @@ def _show_eval_grad(test_dir, config):
     if inputs:
         print("Inputs:")
         for i, rel in enumerate(inputs):
+            if rel in ("box", "point"):
+                print(f"  marker: {rel}")
+                continue
             _print_bin(test_dir / rel, f"input {i}")
 
     if expected_outputs:
@@ -147,9 +150,9 @@ def _show_test(test_dir):
     print(f"=== {test_dir} ===")
     print()
 
-    if command in ("eval", "grad"):
+    if command in ("eval", "grad", "bounds"):
         _show_eval_grad(test_dir, config)
-    elif command in ("fuzz_eval", "fuzz_grad"):
+    elif command in ("fuzz_eval", "fuzz_grad", "fuzz_bounds"):
         _show_fuzz(test_dir, config)
     elif command == "train":
         _show_train(test_dir, config)
