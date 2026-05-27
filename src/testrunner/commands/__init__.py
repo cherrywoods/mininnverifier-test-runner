@@ -1,10 +1,11 @@
 # Copyright (c) 2026 by David Boetius
 # Licensed under the MIT License.
+from .bounds import build_bounds_cmd
 from .eval import build_eval_cmd
 from .grad import build_grad_cmd
 from .train import run_train_test
 
-COMMANDS = {"eval": build_eval_cmd, "grad": build_grad_cmd}
+COMMANDS = {"eval": build_eval_cmd, "grad": build_grad_cmd, "bounds": build_bounds_cmd}
 
 # RUNNERS is populated lazily to break a circular import:
 # commands/__init__ -> fuzz -> fuzz.runner -> commands.common -> commands/__init__
@@ -13,7 +14,11 @@ RUNNERS = {}
 # Cheapest commands first. Tests are run in this order so that fast/cheap
 # tests fail early before expensive ones are attempted.
 # Append new commands at the position that matches their cost.
-COMMAND_ORDER = ["eval", "grad", "train", "fuzz_eval", "fuzz_grad", "bench_eval", "bench_grad"]
+COMMAND_ORDER = [
+    "eval", "grad", "bounds", "train",
+    "fuzz_eval", "fuzz_grad", "fuzz_bounds",
+    "bench_eval", "bench_grad",
+]
 
 
 def command_sort_key(command: str) -> int:
@@ -30,7 +35,7 @@ def command_sort_key(command: str) -> int:
 
 def _init_runners():
     if not RUNNERS:
-        from testrunner.fuzz import run_fuzz_eval, run_fuzz_grad
+        from testrunner.fuzz import run_fuzz_eval, run_fuzz_grad, run_fuzz_bounds
         from testrunner.benchmark import run_bench_eval, run_bench_grad
 
         RUNNERS.update(
@@ -38,6 +43,7 @@ def _init_runners():
                 "train": run_train_test,
                 "fuzz_eval": run_fuzz_eval,
                 "fuzz_grad": run_fuzz_grad,
+                "fuzz_bounds": run_fuzz_bounds,
                 "bench_eval": run_bench_eval,
                 "bench_grad": run_bench_grad,
             }
