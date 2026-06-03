@@ -133,6 +133,44 @@ def run_fuzz_grad(
     )
 
 
+def run_fuzz_bounds(
+    test_dir,
+    config,
+    output_dir,
+    backend,
+    backend_arg,
+    generate=False,
+    output_handler=None,
+    closed=False,
+    extra_run_args=(),
+):
+    """Fuzz runner for the bounds command.
+
+    Each trial generates a random graph and a random center input per invar.
+    The center is widened by ``eps`` (default 0.05; configurable via
+    ``test.json``'s ``"eps"`` field) into an axis-aligned box, the bounds
+    CLI is invoked with one ``box`` marker per invar, and the impl's lb/ub
+    output pairs are validated structurally (count, shape, lb <= ub, and
+    optionally finiteness if ``check_nan_inf`` is set).
+    """
+    if generate:
+        import warnings
+
+        warnings.warn("--generate has no effect for fuzz tests")
+        return {"passed": True, "error": None, "generated": False}
+    return _run_fuzz(
+        test_dir,
+        config,
+        output_dir,
+        backend,
+        backend_arg,
+        mode="bounds",
+        output_handler=output_handler,
+        closed=closed,
+        extra_run_args=extra_run_args,
+    )
+
+
 @st.composite
 def _graph_with_inputs(draw, primitives=None):
     """Composite strategy that generates a graph and matching input arrays."""
@@ -167,6 +205,7 @@ def _run_fuzz(
     timeout = get_timeout(config)
     primitives = resolve_primitives(config.get("primitives", "all"))
     check_nan_inf = config.get("check_nan_inf", False)
+    eps = float(config.get("eps", 0.05)) if mode == "bounds" else None
 
     # For open tests, save up to MAX_SAVED failing cases to disk,
     # deduplicated by error message (one example per distinct error).
@@ -209,6 +248,7 @@ def _run_fuzz(
             timeout=timeout,
             save_dir=trial_save_dir,
             extra_run_args=extra_run_args,
+            eps=eps,
         )
         if not result["passed"] and result.get("saved_to"):
             trial_size = len(serialize_graph(graph)) + sum(arr.nbytes for arr in inputs.values())
@@ -282,12 +322,14 @@ def _run_single_trial(
     timeout=60,
     save_dir=None,
     extra_run_args=(),
+    eps=None,
 ):
     """Run a single fuzz trial.
 
     Args:
         save_dir: If not None and the trial fails, copy the network and
             input files to a subdirectory of save_dir for reproduction.
+        eps: Half-width of the input box for ``mode="bounds"``.
     """
     with tempfile.TemporaryDirectory(dir=output_dir) as tmp_dir:
         tmp_dir = Path(tmp_dir)
@@ -296,36 +338,62 @@ def _run_single_trial(
         network_path = tmp_dir / "network.mininn"
         network_path.write_bytes(serialize_graph(graph))
 
-        # Write input .bin files
-        input_paths = []
-        for var in graph.invars:
-            input_path = tmp_dir / f"{var.name}.bin"
-            inputs[var.name].tofile(input_path)
-            input_paths.append(input_path)
+        if mode == "bounds":
+            box_paths = []
+            for var in graph.invars:
+                center = inputs[var.name]
+                lb = (center - eps).astype(np.float64)
+                ub = (center + eps).astype(np.float64)
+                lb_path = tmp_dir / f"{var.name}_lb.bin"
+                ub_path = tmp_dir / f"{var.name}_ub.bin"
+                lb.tofile(lb_path)
+                ub.tofile(ub_path)
+                box_paths.append((lb_path, ub_path))
 
-        # Determine expected shapes
-        if mode == "eval":
             expected_shapes = [v.shape for v in graph.outvars]
+            input_paths_for_save = [p for pair in box_paths for p in pair]
+            result = run_and_check_bounds(
+                network_path,
+                box_paths,
+                backend,
+                backend_arg,
+                expected_shapes,
+                check_nan_inf=check_nan_inf,
+                timeout=timeout,
+                extra_run_args=extra_run_args,
+            )
         else:
-            expected_shapes = [v.shape for v in graph.invars]
+            # Write input .bin files
+            input_paths = []
+            for var in graph.invars:
+                input_path = tmp_dir / f"{var.name}.bin"
+                inputs[var.name].tofile(input_path)
+                input_paths.append(input_path)
 
-        result = run_and_check(
-            network_path,
-            input_paths,
-            backend,
-            backend_arg,
-            mode,
-            expected_shapes,
-            check_nan_inf=check_nan_inf,
-            timeout=timeout,
-            extra_run_args=extra_run_args,
-        )
+            # Determine expected shapes
+            if mode == "eval":
+                expected_shapes = [v.shape for v in graph.outvars]
+            else:
+                expected_shapes = [v.shape for v in graph.invars]
+
+            input_paths_for_save = input_paths
+            result = run_and_check(
+                network_path,
+                input_paths,
+                backend,
+                backend_arg,
+                mode,
+                expected_shapes,
+                check_nan_inf=check_nan_inf,
+                timeout=timeout,
+                extra_run_args=extra_run_args,
+            )
 
         if not result["passed"] and save_dir is not None:
             result["saved_to"] = _save_failure(
                 save_dir,
                 network_path,
-                input_paths,
+                input_paths_for_save,
                 mode=mode,
                 check_nan_inf=check_nan_inf,
                 expected_shapes=expected_shapes,
@@ -425,6 +493,120 @@ def run_and_check(
     return {"passed": True, "error": None}
 
 
+def run_and_check_bounds(
+    network_path,
+    box_paths,
+    backend,
+    backend_arg,
+    expected_shapes,
+    check_nan_inf=False,
+    timeout=60,
+    extra_run_args=(),
+):
+    """Run the SUT's bounds command on a network + per-input box, validate outputs.
+
+    ``box_paths`` is a list of ``(lb_path, ub_path)`` per input variable.
+    The impl is expected to emit two output files per network output (lb
+    first, then ub).  We verify:
+
+      * exit code 0
+      * exactly ``2 * len(expected_shapes)`` output files
+      * each output file has the right element count
+      * for every (lb, ub) pair, ``lb <= ub`` element-wise
+      * optionally, no NaN/Inf
+    """
+    network_path = Path(network_path)
+    work_dir = network_path.parent
+
+    cmd = _build_bounds_cmd(
+        network_path,
+        box_paths,
+        work_dir / "output",
+        backend,
+        backend_arg,
+        work_dir,
+        extra_run_args=extra_run_args,
+    )
+    (work_dir / "output").mkdir(exist_ok=True)
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"passed": False, "error": f"timed out after {timeout}s"}
+
+    stdout = result.stdout.strip()
+    stderr = result.stderr.strip()
+
+    if result.returncode != 0:
+        return {
+            "passed": False,
+            "error": f"crash (exit {result.returncode}): {_truncate(stderr)}",
+            "stdout": stdout,
+            "stderr": stderr,
+        }
+
+    output_files, _ = parse_output_paths(
+        result.stdout,
+        container_root=work_dir if is_container_backend(backend) else None,
+    )
+
+    n_outputs = len(expected_shapes)
+    if not output_files:
+        return {
+            "passed": False,
+            "error": "no output files produced",
+            "stdout": stdout, "stderr": stderr,
+        }
+    if len(output_files) != 2 * n_outputs:
+        return {
+            "passed": False,
+            "error": (
+                f"expected {2 * n_outputs} bound files (lb,ub per output), "
+                f"got {len(output_files)}"
+            ),
+            "stdout": stdout, "stderr": stderr,
+        }
+
+    for i, expected_shape in enumerate(expected_shapes):
+        expected_size = 1
+        for d in expected_shape:
+            expected_size *= d
+        lb_path, ub_path = output_files[2 * i], output_files[2 * i + 1]
+        lb = np.fromfile(lb_path, dtype=np.float64)
+        ub = np.fromfile(ub_path, dtype=np.float64)
+        if lb.size != expected_size or ub.size != expected_size:
+            return {
+                "passed": False,
+                "error": (
+                    f"output {i}: expected {expected_size} values per bound "
+                    f"(shape {expected_shape}), got lb={lb.size}, ub={ub.size}"
+                ),
+                "stdout": stdout, "stderr": stderr,
+            }
+        if (ub < lb).any():
+            worst = float((lb - ub).max())
+            return {
+                "passed": False,
+                "error": f"output {i}: impl_ub < impl_lb by up to {worst:.3e}",
+                "stdout": stdout, "stderr": stderr,
+            }
+        if check_nan_inf:
+            if not np.isfinite(lb).all():
+                return {
+                    "passed": False,
+                    "error": f"{lb_path.name}: lb contains NaN/Inf",
+                    "stdout": stdout, "stderr": stderr,
+                }
+            if not np.isfinite(ub).all():
+                return {
+                    "passed": False,
+                    "error": f"{ub_path.name}: ub contains NaN/Inf",
+                    "stdout": stdout, "stderr": stderr,
+                }
+
+    return {"passed": True, "error": None}
+
+
 def _save_failure(
     save_dir,
     network_path,
@@ -501,5 +683,47 @@ def _build_cmd(
             str(output_dir),
             str(network_path),
             *[str(p) for p in input_paths],
+        ]
+    return cmd
+
+
+def _build_bounds_cmd(
+    network_path,
+    box_paths,
+    output_dir,
+    backend,
+    backend_arg,
+    test_dir,
+    extra_run_args=(),
+):
+    """Build the CLI command for ``bounds`` with one ``box`` marker per invar."""
+    if is_container_backend(backend):
+        tokens = []
+        for lb_path, ub_path in box_paths:
+            tokens += [
+                "box",
+                f"/data/{lb_path.relative_to(test_dir)}",
+                f"/data/{ub_path.relative_to(test_dir)}",
+            ]
+        cmd = [
+            *container_run_prefix(backend, test_dir, extra_run_args),
+            backend_arg,
+            "bounds",
+            "--output-dir",
+            f"/data/{output_dir.relative_to(test_dir)}",
+            f"/data/{network_path.relative_to(test_dir)}",
+            *tokens,
+        ]
+    else:
+        tokens = []
+        for lb_path, ub_path in box_paths:
+            tokens += ["box", str(lb_path), str(ub_path)]
+        cmd = [
+            *shlex.split(backend_arg),
+            "bounds",
+            "--output-dir",
+            str(output_dir),
+            str(network_path),
+            *tokens,
         ]
     return cmd

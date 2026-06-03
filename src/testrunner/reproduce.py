@@ -65,6 +65,23 @@ def reproduce(failure_dir, backend, backend_arg, extra_run_args=()):
             shutil.copy2(p, dest)
             tmp_inputs.append(dest)
 
+        if mode == "bounds":
+            from testrunner.fuzz import run_and_check_bounds
+
+            if len(tmp_inputs) % 2 != 0:
+                return {
+                    "passed": False,
+                    "error": f"bounds saved failure has odd input count ({len(tmp_inputs)})",
+                }
+            box_paths = [
+                (tmp_inputs[2 * i], tmp_inputs[2 * i + 1])
+                for i in range(len(tmp_inputs) // 2)
+            ]
+            return run_and_check_bounds(
+                tmp_network, box_paths, backend, backend_arg, expected_shapes,
+                check_nan_inf=check_nan_inf, extra_run_args=extra_run_args,
+            )
+
         return run_and_check(
             tmp_network,
             tmp_inputs,
