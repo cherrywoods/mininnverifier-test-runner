@@ -4,6 +4,7 @@ from .bounds import build_bounds_cmd
 from .eval import build_eval_cmd
 from .grad import build_grad_cmd
 from .train import run_train_test
+from .verify import run_verify_test
 
 COMMANDS = {"eval": build_eval_cmd, "grad": build_grad_cmd, "bounds": build_bounds_cmd}
 
@@ -15,9 +16,9 @@ RUNNERS = {}
 # tests fail early before expensive ones are attempted.
 # Append new commands at the position that matches their cost.
 COMMAND_ORDER = [
-    "eval", "grad", "bounds", "train",
+    "eval", "grad", "bounds", "verify", "train",
     "fuzz_eval", "fuzz_grad", "fuzz_bounds",
-    "bench_eval", "bench_grad",
+    "bench_eval", "bench_grad", "bench_bounds", "bench_verify",
 ]
 
 
@@ -36,15 +37,20 @@ def command_sort_key(command: str) -> int:
 def _init_runners():
     if not RUNNERS:
         from testrunner.fuzz import run_fuzz_eval, run_fuzz_grad, run_fuzz_bounds
-        from testrunner.benchmark import run_bench_eval, run_bench_grad
+        from testrunner.benchmark import (
+            run_bench_eval, run_bench_grad, run_bench_bounds, run_bench_verify
+        )
 
         RUNNERS.update(
             {
                 "train": run_train_test,
+                "verify": run_verify_test,
                 "fuzz_eval": run_fuzz_eval,
                 "fuzz_grad": run_fuzz_grad,
                 "fuzz_bounds": run_fuzz_bounds,
                 "bench_eval": run_bench_eval,
                 "bench_grad": run_bench_grad,
+                "bench_bounds": run_bench_bounds,
+                "bench_verify": run_bench_verify,
             }
         )

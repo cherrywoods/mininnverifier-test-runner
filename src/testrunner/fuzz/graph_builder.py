@@ -315,7 +315,10 @@ def _try_apply(prim_name, available, draw, var_counter, const_counter, constants
         return eqn, out_var, new_consts, var_counter + 1, const_counter
 
     elif prim_name == "pad":
-        inp = _pick(available)
+        candidates = [v for v in available if len(v.shape) >= 1]
+        if not candidates:
+            return None
+        inp = _pick(candidates)
         ndim = len(inp.shape)
         n_axes = min(ndim, draw(st.integers(min_value=1, max_value=2)))
         axes = tuple(range(-n_axes, 0))

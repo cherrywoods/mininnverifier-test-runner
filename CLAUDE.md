@@ -39,7 +39,11 @@ This is a test orchestration system that discovers `test.json` files under a dir
 ```
 The implementation writes output `.bin` files and prints their paths to stdout (one per line).
 
-**Test modes**: `eval`, `grad`, `train`, `fuzz_eval`, `fuzz_grad`, `bench_eval`, `bench_grad`. Commands are registered in `commands/__init__.py`; fuzz runners live in `fuzz/`, benchmark runners in `benchmark/`.
+**Test modes**: `eval`, `grad`, `bounds`, `verify`, `train`, `fuzz_eval`, `fuzz_grad`, `fuzz_bounds`, `bench_eval`, `bench_grad`, `bench_bounds`, `bench_verify`. Commands are registered in `commands/__init__.py`; fuzz runners live in `fuzz/`, benchmark runners in `benchmark/`.
+
+- `bounds` (milestone2): IBP output bounds for an input box (inline `box`/`point` input markers); checked by `bounds_within_range` (soundness vs samples + optional tightness vs a reference IBP). Builder `commands/bounds.py`.
+- `verify` (milestone2/3): decide `margin(x) >= 0` over an input box; the implementation prints the verdict (`sat`/`viol`) on the **last** stdout line, and for `viol` writes `counterexample_<i>.bin` per network input (paths printed just before the verdict). Custom runner `commands/verify.py:run_verify_test` checks the verdict against `expected_verdict` and, for `viol`, re-evaluates the network at the reported witness (via `eval`) to confirm it is in-box and `margin < 0` (any valid witness is accepted).
+- `bench_bounds` / `bench_verify`: time the `bounds` / `verify` SUT call against a `reference_time.json` (speed scoring), same as `bench_eval`/`bench_grad`. `benchmark/runner.py` dispatches the SUT builder by mode via `_SUT_BUILDERS`.
 
 **Network format** (`.mininn`): A ZIP archive containing `graph.txt` (variable shapes and equations) and `*.bin` constant files (flat float64 arrays, no header). Example graph line: `c[2,3] = add{} a b`.
 
