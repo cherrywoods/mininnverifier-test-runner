@@ -37,8 +37,19 @@ from testrunner.commands.common import (
     parse_output_paths,
     run_subprocess,
 )
+from testrunner.commands.bounds import build_bounds_cmd
+from testrunner.commands.verify import build_verify_cmd
 
 REFERENCE_FILE = "reference_time.json"
+
+# Per-mode SUT command builders. eval/grad share one builder; bounds and verify
+# use the box/point input convention.
+_SUT_BUILDERS = {
+    "eval": build_eval_grad_cmd,
+    "grad": build_eval_grad_cmd,
+    "bounds": build_bounds_cmd,
+    "verify": build_verify_cmd,
+}
 
 
 def run_bench_eval(
@@ -77,6 +88,28 @@ def run_bench_grad(
     )
 
 
+def run_bench_bounds(
+    test_dir, config, output_dir, backend, backend_arg,
+    generate=False, output_handler=None, closed=False, extra_run_args=(),
+):
+    return _run_benchmark(
+        test_dir, config, output_dir, backend, backend_arg,
+        mode="bounds", generate=generate, output_handler=output_handler, closed=closed,
+        extra_run_args=extra_run_args,
+    )
+
+
+def run_bench_verify(
+    test_dir, config, output_dir, backend, backend_arg,
+    generate=False, output_handler=None, closed=False, extra_run_args=(),
+):
+    return _run_benchmark(
+        test_dir, config, output_dir, backend, backend_arg,
+        mode="verify", generate=generate, output_handler=output_handler, closed=closed,
+        extra_run_args=extra_run_args,
+    )
+
+
 def _run_benchmark(
     test_dir, config, output_dir, backend, backend_arg, mode,
     generate=False, output_handler=None, closed=False, extra_run_args=(),
@@ -87,9 +120,10 @@ def _run_benchmark(
     timeout = get_timeout(config)
 
     # Build the command once — all repetitions use the same arguments.
-    # Use mode (eval/grad) for the SUT subcommand, not "bench_eval"/"bench_grad".
+    # Use the underlying mode (eval/grad/bounds/verify) as the SUT subcommand,
+    # not "bench_<mode>".
     sut_config = {**config, "command": mode}
-    cmd, cwd = build_eval_grad_cmd(
+    cmd, cwd = _SUT_BUILDERS[mode](
         sut_config, test_dir, output_dir, backend, backend_arg, extra_run_args=extra_run_args
     )
 
