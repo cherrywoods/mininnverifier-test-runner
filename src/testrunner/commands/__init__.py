@@ -3,10 +3,16 @@
 from .bounds import build_bounds_cmd
 from .eval import build_eval_cmd
 from .grad import build_grad_cmd
+from .linear_bounds import build_linear_bounds_cmd
 from .train import run_train_test
 from .verify import run_verify_test
 
-COMMANDS = {"eval": build_eval_cmd, "grad": build_grad_cmd, "bounds": build_bounds_cmd}
+COMMANDS = {
+    "eval": build_eval_cmd,
+    "grad": build_grad_cmd,
+    "bounds": build_bounds_cmd,
+    "linear_bounds": build_linear_bounds_cmd,
+}
 
 # RUNNERS is populated lazily to break a circular import:
 # commands/__init__ -> fuzz -> fuzz.runner -> commands.common -> commands/__init__
@@ -16,7 +22,7 @@ RUNNERS = {}
 # tests fail early before expensive ones are attempted.
 # Append new commands at the position that matches their cost.
 COMMAND_ORDER = [
-    "eval", "grad", "bounds", "verify", "train",
+    "eval", "grad", "bounds", "linear_bounds", "verify", "train",
     "fuzz_eval", "fuzz_grad", "fuzz_bounds",
     "bench_eval", "bench_grad", "bench_bounds", "bench_verify",
 ]

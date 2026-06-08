@@ -171,6 +171,7 @@ DEFAULT_SCORING = {
     "eval": "binary",
     "grad": "binary",
     "bounds": "binary",
+    "linear_bounds": "binary",
     "verify": "binary",
     "train": "exponential",
     "fuzz_eval": "proportional",
