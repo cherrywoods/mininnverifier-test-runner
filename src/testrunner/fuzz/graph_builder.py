@@ -78,12 +78,16 @@ SAFE_PRIMITIVES = [p for p in ALL_PRIMITIVES if p not in UNSAFE_PRIMITIVES]
 # ---------------------------------------------------------------------------
 
 
-def generate_graph(draw, primitives=None) -> Graph:
+def generate_graph(draw, primitives=None, allow_bilinear_dot=True) -> Graph:
     """Generate a random valid compute graph.
 
     Args:
         draw: hypothesis draw function (e.g. _DrawAdapter instance).
         primitives: list of primitive names to use (defaults to ALL_PRIMITIVES).
+        allow_bilinear_dot: when False, ``dot`` is only ever applied with a
+            constant right operand (a linear application). The bounds fuzzer
+            sets this so that ``dot`` is never a bilinear application of two
+            bounded operands, which IBP does not handle.
 
     Returns:
         A Graph with random structure and constant values.
@@ -114,7 +118,15 @@ def generate_graph(draw, primitives=None) -> Graph:
 
         for prim_idx in order:
             prim_name = primitives[prim_idx]
-            result = _try_apply(prim_name, available, draw, var_counter, const_counter, constants)
+            result = _try_apply(
+                prim_name,
+                available,
+                draw,
+                var_counter,
+                const_counter,
+                constants,
+                allow_bilinear_dot=allow_bilinear_dot,
+            )
             if result is not None:
                 eqn, new_var, new_consts, var_counter, const_counter = result
                 equations.append(eqn)
@@ -136,7 +148,9 @@ def generate_graph(draw, primitives=None) -> Graph:
     return Graph(invars=invars, outvars=outvars, equations=equations, constants=constants)
 
 
-def _try_apply(prim_name, available, draw, var_counter, const_counter, constants):
+def _try_apply(
+    prim_name, available, draw, var_counter, const_counter, constants, allow_bilinear_dot=True
+):
     """Try to apply a primitive. Returns (equation, new_var, new_consts, var_c, const_c) or None."""
     new_consts = {}
 
@@ -234,9 +248,11 @@ def _try_apply(prim_name, available, draw, var_counter, const_counter, constants
             return None
         left = _pick(candidates_left)
         k = left.shape[-1]
-        # Find a matching right operand
+        # Find a matching right operand. A bounded (variable) right operand
+        # makes this a bilinear application; only use one when allowed,
+        # otherwise the right operand is always a constant matrix.
         candidates_right = [v for v in available if len(v.shape) == 2 and v.shape[0] == k]
-        if candidates_right:
+        if candidates_right and allow_bilinear_dot:
             right = _pick(candidates_right)
         else:
             n = draw(_st_dim_size)

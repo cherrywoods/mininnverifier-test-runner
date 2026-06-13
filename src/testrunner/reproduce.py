@@ -77,9 +77,13 @@ def reproduce(failure_dir, backend, backend_arg, extra_run_args=()):
                 (tmp_inputs[2 * i], tmp_inputs[2 * i + 1])
                 for i in range(len(tmp_inputs) // 2)
             ]
+            sound_cfg = metadata.get("sound_cfg", {})
             return run_and_check_bounds(
                 tmp_network, box_paths, backend, backend_arg, expected_shapes,
                 check_nan_inf=check_nan_inf, extra_run_args=extra_run_args,
+                n_eval_samples=sound_cfg.get("n_eval_samples", 3),
+                sample_atol=sound_cfg.get("sample_atol", 1e-6),
+                sample_rtol=sound_cfg.get("sample_rtol", 1e-6),
             )
 
         return run_and_check(

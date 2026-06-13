@@ -21,6 +21,7 @@ log/sqrt/reciprocal), or an explicit list of primitive names.
 ``check_nan_inf`` defaults to ``false``.
 """
 
+import hashlib
 import json as json_mod
 import shlex
 import shutil
@@ -147,11 +148,14 @@ def run_fuzz_bounds(
     """Fuzz runner for the bounds command.
 
     Each trial generates a random graph and a random center input per invar.
-    The center is widened by ``eps`` (default 0.05; configurable via
-    ``test.json``'s ``"eps"`` field) into an axis-aligned box, the bounds
-    CLI is invoked with one ``box`` marker per invar, and the impl's lb/ub
-    output pairs are validated structurally (count, shape, lb <= ub, and
-    optionally finiteness if ``check_nan_inf`` is set).
+    The center is widened by a fuzzed half-width ``eps`` — drawn per trial from
+    ``[eps_min, eps_max]`` (default ``[0.0, 0.5]``; configurable in
+    ``test.json``) — into an axis-aligned box.  The bounds CLI is invoked with
+    one ``box`` marker per invar, and the impl's lb/ub output pairs are
+    validated structurally (count, shape, lb <= ub, and optionally finiteness
+    if ``check_nan_inf`` is set) and for **soundness**: random points inside the
+    box are run through the ``eval`` command and must fall within the reported
+    bounds (``n_eval_samples``, ``sample_atol``, ``sample_rtol`` configurable).
     """
     if generate:
         import warnings
@@ -172,9 +176,21 @@ def run_fuzz_bounds(
 
 
 @st.composite
-def _graph_with_inputs(draw, primitives=None):
-    """Composite strategy that generates a graph and matching input arrays."""
-    graph = generate_graph(draw, primitives=primitives)
+def _graph_with_inputs(draw, primitives=None, eps_range=None, allow_bilinear_dot=True):
+    """Composite strategy that generates a graph and matching input arrays.
+
+    When ``eps_range`` is given as ``(lo, hi)``, an ``eps`` half-width is
+    drawn last and returned as the third tuple element; otherwise ``eps`` is
+    ``None``.  Drawing ``eps`` only when requested keeps the graph/input draw
+    sequence byte-for-byte identical for the ``eval``/``grad`` fuzz runners.
+
+    ``allow_bilinear_dot`` is forwarded to ``generate_graph``; the bounds
+    runner sets it to ``False`` so ``dot`` is never applied to two bounded
+    operands (which IBP cannot bound).
+    """
+    graph = generate_graph(
+        draw, primitives=primitives, allow_bilinear_dot=allow_bilinear_dot
+    )
     inputs = {}
     for var in graph.invars:
         data = draw(
@@ -187,7 +203,13 @@ def _graph_with_inputs(draw, primitives=None):
             )
         )
         inputs[var.name] = data
-    return graph, inputs
+    eps = None
+    if eps_range is not None:
+        lo, hi = eps_range
+        eps = draw(
+            st.floats(min_value=lo, max_value=hi, allow_nan=False, allow_infinity=False)
+        )
+    return graph, inputs, eps
 
 
 def _run_fuzz(
@@ -205,7 +227,22 @@ def _run_fuzz(
     timeout = get_timeout(config)
     primitives = resolve_primitives(config.get("primitives", "all"))
     check_nan_inf = config.get("check_nan_inf", False)
-    eps = float(config.get("eps", 0.05)) if mode == "bounds" else None
+
+    # Bounds soundness: the input box half-width ``eps`` is itself fuzzed,
+    # drawn per trial from ``[eps_min, eps_max]``.  After computing bounds we
+    # sample random points inside the box, run ``eval`` on each, and check the
+    # bounds contain the concrete outputs (SUT bounds ⊇ SUT eval).
+    eps_range = None
+    sound_cfg = {}
+    if mode == "bounds":
+        eps_min = float(config.get("eps_min", 0.0))
+        eps_max = float(config.get("eps_max", config.get("eps", 0.5)))
+        eps_range = (eps_min, eps_max)
+        sound_cfg = {
+            "n_eval_samples": int(config.get("n_eval_samples", 3)),
+            "sample_atol": float(config.get("sample_atol", 1e-6)),
+            "sample_rtol": float(config.get("sample_rtol", 1e-6)),
+        }
 
     # For open tests, save up to MAX_SAVED failing cases to disk,
     # deduplicated by error message (one example per distinct error).
@@ -224,7 +261,13 @@ def _run_fuzz(
     trial_counter = [0]
     test_path = str(test_dir.name)
 
-    @given(data=_graph_with_inputs(primitives=primitives))
+    @given(
+        data=_graph_with_inputs(
+            primitives=primitives,
+            eps_range=eps_range,
+            allow_bilinear_dot=(mode != "bounds"),
+        )
+    )
     @settings(
         max_examples=n_trials,
         database=None,
@@ -233,7 +276,7 @@ def _run_fuzz(
         suppress_health_check=list(HealthCheck),
     )
     def fuzz_trial(data):
-        graph, inputs = data
+        graph, inputs, eps = data
         # Always attempt to save when save_dir is set — the dedup
         # logic below will discard or replace as needed.
         trial_save_dir = save_dir
@@ -249,6 +292,7 @@ def _run_fuzz(
             save_dir=trial_save_dir,
             extra_run_args=extra_run_args,
             eps=eps,
+            sound_cfg=sound_cfg,
         )
         if not result["passed"] and result.get("saved_to"):
             trial_size = len(serialize_graph(graph)) + sum(arr.nbytes for arr in inputs.values())
@@ -323,6 +367,7 @@ def _run_single_trial(
     save_dir=None,
     extra_run_args=(),
     eps=None,
+    sound_cfg=None,
 ):
     """Run a single fuzz trial.
 
@@ -330,7 +375,10 @@ def _run_single_trial(
         save_dir: If not None and the trial fails, copy the network and
             input files to a subdirectory of save_dir for reproduction.
         eps: Half-width of the input box for ``mode="bounds"``.
+        sound_cfg: Soundness-sampling config for ``mode="bounds"``
+            (``n_eval_samples``, ``sample_atol``, ``sample_rtol``).
     """
+    sound_cfg = sound_cfg or {}
     with tempfile.TemporaryDirectory(dir=output_dir) as tmp_dir:
         tmp_dir = Path(tmp_dir)
 
@@ -361,6 +409,9 @@ def _run_single_trial(
                 check_nan_inf=check_nan_inf,
                 timeout=timeout,
                 extra_run_args=extra_run_args,
+                n_eval_samples=sound_cfg.get("n_eval_samples", 3),
+                sample_atol=sound_cfg.get("sample_atol", 1e-6),
+                sample_rtol=sound_cfg.get("sample_rtol", 1e-6),
             )
         else:
             # Write input .bin files
@@ -399,6 +450,7 @@ def _run_single_trial(
                 expected_shapes=expected_shapes,
                 error=result.get("error"),
                 stderr=result.get("stderr"),
+                sound_cfg=sound_cfg if mode == "bounds" else None,
             )
 
     return result
@@ -502,6 +554,9 @@ def run_and_check_bounds(
     check_nan_inf=False,
     timeout=60,
     extra_run_args=(),
+    n_eval_samples=3,
+    sample_atol=1e-6,
+    sample_rtol=1e-6,
 ):
     """Run the SUT's bounds command on a network + per-input box, validate outputs.
 
@@ -514,6 +569,16 @@ def run_and_check_bounds(
       * each output file has the right element count
       * for every (lb, ub) pair, ``lb <= ub`` element-wise
       * optionally, no NaN/Inf
+      * **soundness**: for ``n_eval_samples`` random points inside the input
+        box (plus the box corners and centre), the SUT's ``eval`` output must
+        lie within the SUT's bounds, i.e. ``lb - tol <= eval(x) <= ub + tol``
+        with ``tol = sample_atol + sample_rtol * max(|lb|, |ub|)``.
+
+    The soundness check is *self-consistency* (SUT bounds ⊇ SUT eval), not a
+    comparison against a ground-truth oracle.  Non-finite ``eval`` outputs
+    (e.g. from numerically unsafe primitives) are skipped, and ``eval`` runs
+    that crash on a sampled point are ignored — those are the province of the
+    eval fuzz tests, not bounds soundness.
     """
     network_path = Path(network_path)
     work_dir = network_path.parent
@@ -567,6 +632,7 @@ def run_and_check_bounds(
             "stdout": stdout, "stderr": stderr,
         }
 
+    impl_bounds = []
     for i, expected_shape in enumerate(expected_shapes):
         expected_size = 1
         for d in expected_shape:
@@ -603,8 +669,178 @@ def run_and_check_bounds(
                     "error": f"{ub_path.name}: ub contains NaN/Inf",
                     "stdout": stdout, "stderr": stderr,
                 }
+        impl_bounds.append((lb, ub))
+
+    sound = _check_bounds_soundness(
+        network_path,
+        box_paths,
+        impl_bounds,
+        backend,
+        backend_arg,
+        n_outputs,
+        n_eval_samples=n_eval_samples,
+        sample_atol=sample_atol,
+        sample_rtol=sample_rtol,
+        timeout=timeout,
+        extra_run_args=extra_run_args,
+    )
+    if not sound["passed"]:
+        sound.setdefault("stdout", stdout)
+        sound.setdefault("stderr", stderr)
+        return sound
 
     return {"passed": True, "error": None}
+
+
+def _sample_points(box, n_eval_samples, seed):
+    """Yield flat per-invar input points inside ``box``.
+
+    ``box`` is a list of ``(lb, ub)`` flat float64 arrays, one per invar.
+    Always yields the two box corners (all-lb, all-ub) and the centre, then
+    ``n_eval_samples`` independent uniform-random interior points.  The RNG is
+    seeded from ``seed`` (derived from the box bytes) so the same saved box
+    reproduces the same points.
+    """
+    yield [lb.copy() for lb, _ in box]
+    yield [ub.copy() for _, ub in box]
+    yield [0.5 * (lb + ub) for lb, ub in box]
+    rng = np.random.RandomState(seed)
+    for _ in range(n_eval_samples):
+        yield [lb + rng.random_sample(lb.shape) * (ub - lb) for lb, ub in box]
+
+
+def _check_bounds_soundness(
+    network_path,
+    box_paths,
+    impl_bounds,
+    backend,
+    backend_arg,
+    n_outputs,
+    n_eval_samples,
+    sample_atol,
+    sample_rtol,
+    timeout,
+    extra_run_args,
+):
+    """Validate ``impl_lb <= eval(x) <= impl_ub`` for points sampled in the box.
+
+    Returns a result dict with ``passed``/``error``.  Sampled ``eval`` runs
+    that crash or yield non-finite values are skipped (see
+    ``run_and_check_bounds`` docstring); only a finite output that escapes the
+    bounds beyond tolerance is a failure.
+    """
+    if n_eval_samples <= 0:
+        return {"passed": True, "error": None}
+
+    box = [
+        (np.fromfile(lb_path, dtype=np.float64), np.fromfile(ub_path, dtype=np.float64))
+        for lb_path, ub_path in box_paths
+    ]
+    # Seed the sample RNG from the box bytes so reproduction is deterministic.
+    h = hashlib.sha256()
+    for lb_path, ub_path in box_paths:
+        h.update(Path(lb_path).read_bytes())
+        h.update(Path(ub_path).read_bytes())
+    seed = int.from_bytes(h.digest()[:4], "big")
+
+    work_dir = Path(network_path).parent
+    eval_out_dir = work_dir / "eval_output"
+    eval_out_dir.mkdir(exist_ok=True)
+
+    for point in _sample_points(box, n_eval_samples, seed):
+        outputs = _eval_point(
+            network_path,
+            point,
+            eval_out_dir,
+            backend,
+            backend_arg,
+            n_outputs,
+            timeout=timeout,
+            extra_run_args=extra_run_args,
+        )
+        if outputs is None:
+            continue  # eval crashed / produced wrong shape — not a bounds bug
+        for i, out in enumerate(outputs):
+            lb, ub = impl_bounds[i]
+            if out.size != lb.size:
+                continue
+            finite = np.isfinite(out)
+            if not finite.any():
+                continue
+            o = out[finite]
+            lo = lb[finite]
+            hi = ub[finite]
+            tol = sample_atol + sample_rtol * np.maximum(np.abs(lo), np.abs(hi))
+            lb_viol = float(np.max(lo - o - tol))
+            ub_viol = float(np.max(o - hi - tol))
+            if lb_viol > 0:
+                return {
+                    "passed": False,
+                    "error": (
+                        f"output {i}: lb unsound — impl_lb exceeds an eval sample "
+                        f"by {lb_viol:.3e} (atol {sample_atol:.1e}, rtol {sample_rtol:.1e})"
+                    ),
+                }
+            if ub_viol > 0:
+                return {
+                    "passed": False,
+                    "error": (
+                        f"output {i}: ub unsound — an eval sample exceeds impl_ub "
+                        f"by {ub_viol:.3e} (atol {sample_atol:.1e}, rtol {sample_rtol:.1e})"
+                    ),
+                }
+
+    return {"passed": True, "error": None}
+
+
+def _eval_point(
+    network_path,
+    point,
+    output_dir,
+    backend,
+    backend_arg,
+    n_outputs,
+    timeout,
+    extra_run_args,
+):
+    """Run the SUT's ``eval`` command on a single concrete input point.
+
+    ``point`` is a list of flat float64 arrays in invar order.  Returns a list
+    of flat output arrays (in outvar order), or ``None`` if eval crashed, timed
+    out, or produced the wrong number of outputs.
+    """
+    network_path = Path(network_path)
+    work_dir = network_path.parent
+    input_paths = []
+    for j, arr in enumerate(point):
+        p = output_dir / f"sample_in_{j}.bin"
+        arr.astype(np.float64).tofile(p)
+        input_paths.append(p)
+
+    cmd = _build_cmd(
+        "eval",
+        network_path,
+        input_paths,
+        output_dir,
+        backend,
+        backend_arg,
+        work_dir,
+        extra_run_args=extra_run_args,
+    )
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None
+    if result.returncode != 0:
+        return None
+
+    output_files, _ = parse_output_paths(
+        result.stdout,
+        container_root=work_dir if is_container_backend(backend) else None,
+    )
+    if len(output_files) != n_outputs:
+        return None
+    return [np.fromfile(f, dtype=np.float64) for f in output_files]
 
 
 def _save_failure(
@@ -616,6 +852,7 @@ def _save_failure(
     expected_shapes,
     error=None,
     stderr=None,
+    sound_cfg=None,
 ):
     """Copy the network and input files to save_dir for reproduction.
 
@@ -638,6 +875,9 @@ def _save_failure(
         "expected_shapes": [list(s) for s in expected_shapes],
         "inputs": [inp.name for inp in input_paths],
     }
+    if sound_cfg:
+        # Soundness-sampling params so reproduction redoes the same eval check.
+        metadata["sound_cfg"] = dict(sound_cfg)
     (dest / "metadata.json").write_text(json_mod.dumps(metadata, indent=2))
     if error:
         (dest / "error.txt").write_text(error)
