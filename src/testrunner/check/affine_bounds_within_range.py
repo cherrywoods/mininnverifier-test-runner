@@ -51,7 +51,7 @@ def _read_box(test_dir, config, input_shape):
     """Parse the single ``box`` input spec and return (lb, ub) flattened."""
     inputs = config.get("inputs", [])
     if len(inputs) != 3 or inputs[0] != "box":
-        return None, "linear_bounds expects a single 'box' input spec"
+        return None, "affine_bounds expects a single 'box' input spec"
     n = _prod(input_shape)
     lb = np.fromfile(test_dir / inputs[1], dtype=np.float64)
     ub = np.fromfile(test_dir / inputs[2], dtype=np.float64)
@@ -60,10 +60,10 @@ def _read_box(test_dir, config, input_shape):
     return (lb, ub), None
 
 
-def check_linear_bounds_within_range(test_dir, config, output_files, closed=False):
+def check_affine_bounds_within_range(test_dir, config, output_files, closed=False):
     output_shapes = [tuple(s) for s in config.get("output_shapes", [])]
     if len(output_shapes) != 1:
-        return {"passed": False, "error": "linear_bounds requires exactly one (scalar) output"}
+        return {"passed": False, "error": "affine_bounds requires exactly one (scalar) output"}
     out_shape = output_shapes[0]
     n_out = _prod(out_shape)
 
@@ -126,7 +126,7 @@ def check_linear_bounds_within_range(test_dir, config, output_files, closed=Fals
     if len(sample_in_paths) != 1 or len(sample_out_paths) != 1:
         return {
             "passed": False,
-            "error": "linear_bounds requires exactly one sample_inputs and one sample_outputs entry",
+            "error": "affine_bounds requires exactly one sample_inputs and one sample_outputs entry",
         }
     xs = np.fromfile(test_dir / sample_in_paths[0], dtype=np.float64)
     ys = np.fromfile(test_dir / sample_out_paths[0], dtype=np.float64)
