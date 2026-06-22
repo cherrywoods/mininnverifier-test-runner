@@ -1,9 +1,9 @@
 # Copyright (c) 2026 by David Boetius
 # Licensed under the MIT License.
+from .affine_bounds import build_affine_bounds_cmd
 from .bounds import build_bounds_cmd
 from .eval import build_eval_cmd
 from .grad import build_grad_cmd
-from .linear_bounds import build_linear_bounds_cmd
 from .train import run_train_test
 from .verify import run_verify_test
 
@@ -11,7 +11,7 @@ COMMANDS = {
     "eval": build_eval_cmd,
     "grad": build_grad_cmd,
     "bounds": build_bounds_cmd,
-    "linear_bounds": build_linear_bounds_cmd,
+    "affine_bounds": build_affine_bounds_cmd,
 }
 
 # RUNNERS is populated lazily to break a circular import:
@@ -22,7 +22,7 @@ RUNNERS = {}
 # tests fail early before expensive ones are attempted.
 # Append new commands at the position that matches their cost.
 COMMAND_ORDER = [
-    "eval", "grad", "bounds", "linear_bounds", "verify", "train",
+    "eval", "grad", "bounds", "affine_bounds", "verify", "train",
     "fuzz_eval", "fuzz_grad", "fuzz_bounds",
     "bench_eval", "bench_grad", "bench_bounds", "bench_verify",
 ]

@@ -57,7 +57,7 @@ def test_command_sort_key_known():
     assert command_sort_key("eval") == 0
     assert command_sort_key("grad") == 1
     assert command_sort_key("bounds") == 2
-    assert command_sort_key("linear_bounds") == 3
+    assert command_sort_key("affine_bounds") == 3
     assert command_sort_key("verify") == 4
     assert command_sort_key("train") == 5
     # cheap commands always sort before expensive ones

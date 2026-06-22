@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 DEFAULT_TIMEOUTS = {
-    "eval": 60, "grad": 60, "bounds": 60, "linear_bounds": 120, "verify": 300, "train": 600,
+    "eval": 60, "grad": 60, "bounds": 60, "affine_bounds": 120, "verify": 300, "train": 600,
     "fuzz_eval": 600, "fuzz_grad": 600, "fuzz_bounds": 600,
     "bench_eval": 600, "bench_grad": 600, "bench_bounds": 600, "bench_verify": 900,
 }
