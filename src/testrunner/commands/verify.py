@@ -52,8 +52,15 @@ INPUT_MARKERS = ("box", "point")
 VERDICTS = ("sat", "viol")
 
 
-def build_verify_cmd(config, test_dir, output_dir, backend, backend_arg, extra_run_args=()):
-    """Build the CLI command for ``verify`` (same shape as ``bounds``)."""
+def build_verify_cmd(
+    config, test_dir, output_dir, backend, backend_arg, extra_run_args=(), command="verify"
+):
+    """Build the CLI command for ``verify``/``verify2`` (same shape as ``bounds``).
+
+    *command* is the SUT subcommand to invoke (``verify`` or ``verify2``); the
+    two share an identical input/output protocol and differ only in which
+    verifier the implementation runs.
+    """
     network = config["network"]
     inputs = config.get("inputs", [])
 
@@ -61,7 +68,7 @@ def build_verify_cmd(config, test_dir, output_dir, backend, backend_arg, extra_r
         cmd = [
             *container_run_prefix(backend, test_dir, extra_run_args),
             backend_arg,
-            "verify",
+            command,
             "--output-dir",
             f"/data/{output_dir.relative_to(test_dir)}",
             f"/data/{network}",
@@ -70,7 +77,7 @@ def build_verify_cmd(config, test_dir, output_dir, backend, backend_arg, extra_r
         return cmd, None
     cmd = [
         *shlex.split(backend_arg),
-        "verify",
+        command,
         "--output-dir",
         str(output_dir),
         str(test_dir / network),
@@ -134,8 +141,10 @@ def run_verify_test(
     test_dir, config, output_dir, backend, backend_arg,
     generate=False, output_handler=None, closed=False, extra_run_args=(),
 ):
+    command = config.get("command", "verify")
     cmd, cwd = build_verify_cmd(
-        config, test_dir, output_dir, backend, backend_arg, extra_run_args=extra_run_args
+        config, test_dir, output_dir, backend, backend_arg,
+        extra_run_args=extra_run_args, command=command,
     )
     timeout = get_timeout(config)
     try:
@@ -145,18 +154,18 @@ def run_verify_test(
             output_handler=output_handler,
         )
     except subprocess.TimeoutExpired:
-        return {"passed": False, "error": f"verify timed out after {timeout}s"}
+        return {"passed": False, "error": f"{command} timed out after {timeout}s"}
     if result.returncode != 0:
         return {
             "passed": False,
             "error": "command failed"
             if closed
-            else f"verify failed (exit {result.returncode}): {result.stderr.strip()}",
+            else f"{command} failed (exit {result.returncode}): {result.stderr.strip()}",
         }
 
     lines = [ln.strip() for ln in result.stdout.strip().splitlines() if ln.strip()]
     if not lines:
-        return {"passed": False, "error": "verify produced no output"}
+        return {"passed": False, "error": f"{command} produced no output"}
     verdict = lines[-1]
     if verdict not in VERDICTS:
         return {
