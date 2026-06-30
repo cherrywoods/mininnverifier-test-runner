@@ -15,10 +15,12 @@ import pytest
 from testrunner.show import (
     _print_bin,
     _print_network,
+    _show_affine_bounds,
     _show_eval_grad,
     _show_fuzz,
     _show_test,
     _show_train,
+    _show_verify,
     main,
 )
 
@@ -145,6 +147,128 @@ def test_show_eval_grad_custom_tolerance(tmp_path, capsys):
 
 
 # ---------------------------------------------------------------------------
+# _show_affine_bounds
+# ---------------------------------------------------------------------------
+
+
+def test_show_affine_bounds_basic(tmp_path, capsys):
+    net = _make_mininn(tmp_path, "net.mininn", "input: a[3]\noutput: b[1]")
+    _write_bin(tmp_path / "lb.bin", [0.0, 0.0, 0.0])
+    _write_bin(tmp_path / "ub.bin", [1.0, 1.0, 1.0])
+    _write_bin(tmp_path / "si.bin", [0.0, 0.0, 0.0, 1.0, 1.0, 1.0])
+    _write_bin(tmp_path / "so.bin", [0.0, 3.0])
+    _write_bin(tmp_path / "rlb.bin", [0.0])
+    _write_bin(tmp_path / "rub.bin", [3.0])
+
+    config = {
+        "command": "affine_bounds",
+        "network": "net.mininn",
+        "inputs": ["box", "lb.bin", "ub.bin"],
+        "input_shape": [3],
+        "output_shapes": [[1]],
+        "sample_inputs": ["si.bin"],
+        "sample_outputs": ["so.bin"],
+        "reference_lb": ["rlb.bin"],
+        "reference_ub": ["rub.bin"],
+        "tightness_factor": 1.5,
+    }
+    _show_affine_bounds(tmp_path, config)
+    out = capsys.readouterr().out
+    assert "Command: affine_bounds" in out
+    assert "Input shape: [3]" in out
+    assert "Tightness factor: 1.5" in out
+    assert "input 0: box" in out
+    assert "input 0 lb" in out
+    assert "input 0 ub" in out
+    assert "Sample inputs" in out
+    assert "Reference lower bounds" in out
+
+
+def test_show_affine_bounds_with_actual(tmp_path, capsys):
+    _write_bin(tmp_path / "lb.bin", [0.0])
+    _write_bin(tmp_path / "ub.bin", [1.0])
+    actual_dir = tmp_path / "actual"
+    actual_dir.mkdir()
+    _write_bin(actual_dir / "output_0_lb_weight.bin", [1.0])
+
+    config = {
+        "command": "affine_bounds",
+        "network": None,
+        "inputs": ["box", "lb.bin", "ub.bin"],
+    }
+    _show_affine_bounds(tmp_path, config)
+    out = capsys.readouterr().out
+    assert "Actual affine bounds" in out
+    assert "output_0_lb_weight" in out
+
+
+def test_show_affine_bounds_no_reference(tmp_path, capsys):
+    """Without reference bounds the tightness factor is not printed."""
+    config = {"command": "affine_bounds", "network": None, "inputs": []}
+    _show_affine_bounds(tmp_path, config)
+    out = capsys.readouterr().out
+    assert "Tightness factor" not in out
+
+
+# ---------------------------------------------------------------------------
+# _show_verify
+# ---------------------------------------------------------------------------
+
+
+def test_show_verify_basic(tmp_path, capsys):
+    _make_mininn(tmp_path, "net.mininn", "input: a[3]\noutput: b[1]")
+    _write_bin(tmp_path / "lb.bin", [0.0, 0.0, 0.0])
+    _write_bin(tmp_path / "ub.bin", [1.0, 1.0, 1.0])
+
+    config = {
+        "command": "verify",
+        "network": "net.mininn",
+        "inputs": ["box", "lb.bin", "ub.bin"],
+        "expected_verdict": "sat",
+        "box_atol": 1e-9,
+    }
+    _show_verify(tmp_path, config)
+    out = capsys.readouterr().out
+    assert "Command: verify" in out
+    assert "Expected verdict: sat" in out
+    assert "input 0: box" in out
+
+
+def test_show_verify2_with_counterexample(tmp_path, capsys):
+    _write_bin(tmp_path / "lb.bin", [0.0, 0.0, 0.0])
+    _write_bin(tmp_path / "ub.bin", [1.0, 1.0, 1.0])
+    actual_dir = tmp_path / "actual"
+    actual_dir.mkdir()
+    _write_bin(actual_dir / "counterexample_0.bin", [0.5, 0.5, 0.5])
+
+    config = {
+        "command": "verify2",
+        "network": None,
+        "inputs": ["box", "lb.bin", "ub.bin"],
+        "expected_verdict": "viol",
+    }
+    _show_verify(tmp_path, config)
+    out = capsys.readouterr().out
+    assert "Command: verify2" in out
+    assert "Counterexamples" in out
+    assert "counterexample 0" in out
+
+
+def test_show_verify_point_input(tmp_path, capsys):
+    """A 'point' input marker consumes a single file path."""
+    _write_bin(tmp_path / "p.bin", [1.0, 2.0])
+    config = {
+        "command": "verify",
+        "network": None,
+        "inputs": ["point", "p.bin"],
+        "expected_verdict": "sat",
+    }
+    _show_verify(tmp_path, config)
+    out = capsys.readouterr().out
+    assert "input 0: point" in out
+
+
+# ---------------------------------------------------------------------------
 # _show_train
 # ---------------------------------------------------------------------------
 
@@ -265,6 +389,31 @@ def test_show_test_fuzz_grad(tmp_path, capsys):
     _show_test(tmp_path)
     out = capsys.readouterr().out
     assert "fuzz_grad" in out
+
+
+def test_show_test_affine_bounds(tmp_path, capsys):
+    config = {"command": "affine_bounds", "network": None, "inputs": []}
+    (tmp_path / "test.json").write_text(json.dumps(config))
+    _show_test(tmp_path)
+    out = capsys.readouterr().out
+    assert "Command: affine_bounds" in out
+
+
+def test_show_test_verify(tmp_path, capsys):
+    config = {"command": "verify", "network": None, "inputs": [], "expected_verdict": "sat"}
+    (tmp_path / "test.json").write_text(json.dumps(config))
+    _show_test(tmp_path)
+    out = capsys.readouterr().out
+    assert "Command: verify" in out
+    assert "Expected verdict: sat" in out
+
+
+def test_show_test_verify2(tmp_path, capsys):
+    config = {"command": "verify2", "network": None, "inputs": [], "expected_verdict": "viol"}
+    (tmp_path / "test.json").write_text(json.dumps(config))
+    _show_test(tmp_path)
+    out = capsys.readouterr().out
+    assert "Command: verify2" in out
 
 
 def test_show_test_train(tmp_path, capsys):

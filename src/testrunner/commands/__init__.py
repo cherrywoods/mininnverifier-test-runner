@@ -23,7 +23,7 @@ RUNNERS = {}
 # Append new commands at the position that matches their cost.
 COMMAND_ORDER = [
     "eval", "grad", "bounds", "affine_bounds", "verify", "verify2", "train",
-    "fuzz_eval", "fuzz_grad", "fuzz_bounds",
+    "fuzz_eval", "fuzz_grad", "fuzz_bounds", "fuzz_affine_bounds",
     "bench_eval", "bench_grad", "bench_bounds", "bench_verify",
 ]
 
@@ -42,7 +42,9 @@ def command_sort_key(command: str) -> int:
 
 def _init_runners():
     if not RUNNERS:
-        from testrunner.fuzz import run_fuzz_eval, run_fuzz_grad, run_fuzz_bounds
+        from testrunner.fuzz import (
+            run_fuzz_eval, run_fuzz_grad, run_fuzz_bounds, run_fuzz_affine_bounds
+        )
         from testrunner.benchmark import (
             run_bench_eval, run_bench_grad, run_bench_bounds, run_bench_verify
         )
@@ -55,6 +57,7 @@ def _init_runners():
                 "fuzz_eval": run_fuzz_eval,
                 "fuzz_grad": run_fuzz_grad,
                 "fuzz_bounds": run_fuzz_bounds,
+                "fuzz_affine_bounds": run_fuzz_affine_bounds,
                 "bench_eval": run_bench_eval,
                 "bench_grad": run_bench_grad,
                 "bench_bounds": run_bench_bounds,

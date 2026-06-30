@@ -47,7 +47,13 @@ from testrunner.commands.common import (
     is_container_backend,
     parse_output_paths,
 )
-from .graph_builder import generate_graph, serialize_graph, ALL_PRIMITIVES, SAFE_PRIMITIVES
+from .graph_builder import (
+    generate_graph,
+    scalarize_graph,
+    serialize_graph,
+    ALL_PRIMITIVES,
+    SAFE_PRIMITIVES,
+)
 
 PRIMITIVE_SETS = {"all": ALL_PRIMITIVES, "safe": SAFE_PRIMITIVES}
 
@@ -175,8 +181,52 @@ def run_fuzz_bounds(
     )
 
 
+def run_fuzz_affine_bounds(
+    test_dir,
+    config,
+    output_dir,
+    backend,
+    backend_arg,
+    generate=False,
+    output_handler=None,
+    closed=False,
+    extra_run_args=(),
+):
+    """Fuzz runner for the ``affine_bounds`` (CROWN) command.
+
+    Like ``fuzz_bounds``, but each trial generates a random *single-input,
+    scalar-output* graph (the form CROWN's ``affine_bounds`` entry point
+    requires) and the impl returns an affine relaxation ``lb_weight @ x + lb_bias
+    <= f(x) <= ub_weight @ x + ub_bias`` rather than a constant interval.  The
+    box half-width ``eps`` is fuzzed per trial from ``[eps_min, eps_max]``.  The
+    affine bounds are validated structurally (four files, sizes, ``lb_aff <=
+    ub_aff`` over the box, optionally finiteness) and for **soundness**: random
+    points inside the box are run through ``eval`` and their output must lie
+    between the lower and upper affine bounds.  As with ``fuzz_bounds``, ``dot``
+    is never a bilinear application of two bounded operands.
+    """
+    if generate:
+        import warnings
+
+        warnings.warn("--generate has no effect for fuzz tests")
+        return {"passed": True, "error": None, "generated": False}
+    return _run_fuzz(
+        test_dir,
+        config,
+        output_dir,
+        backend,
+        backend_arg,
+        mode="affine_bounds",
+        output_handler=output_handler,
+        closed=closed,
+        extra_run_args=extra_run_args,
+    )
+
+
 @st.composite
-def _graph_with_inputs(draw, primitives=None, eps_range=None, allow_bilinear_dot=True):
+def _graph_with_inputs(
+    draw, primitives=None, eps_range=None, allow_bilinear_dot=True, scalar=False
+):
     """Composite strategy that generates a graph and matching input arrays.
 
     When ``eps_range`` is given as ``(lo, hi)``, an ``eps`` half-width is
@@ -187,10 +237,19 @@ def _graph_with_inputs(draw, primitives=None, eps_range=None, allow_bilinear_dot
     ``allow_bilinear_dot`` is forwarded to ``generate_graph``; the bounds
     runner sets it to ``False`` so ``dot`` is never applied to two bounded
     operands (which IBP cannot bound).
+
+    ``scalar`` (set by the ``affine_bounds`` runner) forces a single input and
+    reduces the output to a scalar, the form CROWN's ``affine_bounds`` entry
+    point requires.
     """
     graph = generate_graph(
-        draw, primitives=primitives, allow_bilinear_dot=allow_bilinear_dot
+        draw,
+        primitives=primitives,
+        allow_bilinear_dot=allow_bilinear_dot,
+        n_inputs=1 if scalar else None,
     )
+    if scalar:
+        scalarize_graph(graph)
     inputs = {}
     for var in graph.invars:
         data = draw(
@@ -227,7 +286,8 @@ def _run_fuzz(
     timeout = get_timeout(config)
     primitives = resolve_primitives(config.get("primitives", "all"))
     check_nan_inf = config.get("check_nan_inf", False)
-    eps = float(config.get("eps", 0.05)) if mode == "bounds" else None
+    is_bounds = mode in ("bounds", "affine_bounds")
+    eps = float(config.get("eps", 0.05)) if is_bounds else None
 
     # Bounds soundness: the input box half-width ``eps`` is itself fuzzed,
     # drawn per trial from ``[eps_min, eps_max]``.  After computing bounds we
@@ -235,7 +295,7 @@ def _run_fuzz(
     # bounds contain the concrete outputs (SUT bounds ⊇ SUT eval).
     eps_range = None
     sound_cfg = {}
-    if mode == "bounds":
+    if is_bounds:
         eps_min = float(config.get("eps_min", 0.0))
         eps_max = float(config.get("eps_max", config.get("eps", 0.5)))
         eps_range = (eps_min, eps_max)
@@ -266,7 +326,8 @@ def _run_fuzz(
         data=_graph_with_inputs(
             primitives=primitives,
             eps_range=eps_range,
-            allow_bilinear_dot=(mode != "bounds"),
+            allow_bilinear_dot=not is_bounds,
+            scalar=(mode == "affine_bounds"),
         )
     )
     @settings(
@@ -387,7 +448,7 @@ def _run_single_trial(
         network_path = tmp_dir / "network.mininn"
         network_path.write_bytes(serialize_graph(graph))
 
-        if mode == "bounds":
+        if mode in ("bounds", "affine_bounds"):
             box_paths = []
             for var in graph.invars:
                 center = inputs[var.name]
@@ -401,19 +462,34 @@ def _run_single_trial(
 
             expected_shapes = [v.shape for v in graph.outvars]
             input_paths_for_save = [p for pair in box_paths for p in pair]
-            result = run_and_check_bounds(
-                network_path,
-                box_paths,
-                backend,
-                backend_arg,
-                expected_shapes,
-                check_nan_inf=check_nan_inf,
-                timeout=timeout,
-                extra_run_args=extra_run_args,
-                n_eval_samples=sound_cfg.get("n_eval_samples", 3),
-                sample_atol=sound_cfg.get("sample_atol", 1e-6),
-                sample_rtol=sound_cfg.get("sample_rtol", 1e-6),
-            )
+            if mode == "affine_bounds":
+                result = run_and_check_affine_bounds(
+                    network_path,
+                    box_paths,
+                    backend,
+                    backend_arg,
+                    graph.invars[0].shape,
+                    check_nan_inf=check_nan_inf,
+                    timeout=timeout,
+                    extra_run_args=extra_run_args,
+                    n_eval_samples=sound_cfg.get("n_eval_samples", 3),
+                    sample_atol=sound_cfg.get("sample_atol", 1e-6),
+                    sample_rtol=sound_cfg.get("sample_rtol", 1e-6),
+                )
+            else:
+                result = run_and_check_bounds(
+                    network_path,
+                    box_paths,
+                    backend,
+                    backend_arg,
+                    expected_shapes,
+                    check_nan_inf=check_nan_inf,
+                    timeout=timeout,
+                    extra_run_args=extra_run_args,
+                    n_eval_samples=sound_cfg.get("n_eval_samples", 3),
+                    sample_atol=sound_cfg.get("sample_atol", 1e-6),
+                    sample_rtol=sound_cfg.get("sample_rtol", 1e-6),
+                )
         else:
             # Write input .bin files
             input_paths = []
@@ -451,7 +527,7 @@ def _run_single_trial(
                 expected_shapes=expected_shapes,
                 error=result.get("error"),
                 stderr=result.get("stderr"),
-                sound_cfg=sound_cfg if mode == "bounds" else None,
+                sound_cfg=sound_cfg if mode in ("bounds", "affine_bounds") else None,
             )
 
     return result
@@ -689,6 +765,245 @@ def run_and_check_bounds(
         sound.setdefault("stdout", stdout)
         sound.setdefault("stderr", stderr)
         return sound
+
+    return {"passed": True, "error": None}
+
+
+def run_and_check_affine_bounds(
+    network_path,
+    box_paths,
+    backend,
+    backend_arg,
+    input_shape,
+    check_nan_inf=False,
+    timeout=60,
+    extra_run_args=(),
+    n_eval_samples=3,
+    sample_atol=1e-6,
+    sample_rtol=1e-6,
+):
+    """Run the SUT's ``affine_bounds`` command on a single-input scalar network.
+
+    CROWN returns an affine relaxation of the scalar output as a function of the
+    (single) input ``x``.  ``box_paths`` is a one-element list ``[(lb, ub)]``.
+    The impl writes four files (``lb_weight``, ``lb_bias``, ``ub_weight``,
+    ``ub_bias``) and prints their paths in that order.  We verify:
+
+      * exit code 0 and exactly 4 output files,
+      * the weight files have ``prod(input_shape)`` elements and the bias files
+        one element each,
+      * optionally, no NaN/Inf,
+      * **validity**: ``lb_aff(x) <= ub_aff(x)`` for all ``x`` in the box (the
+        difference is affine, so its max is attained at a box vertex), and
+      * **soundness**: for sampled points in the box, the SUT's ``eval`` output
+        lies between the lower and upper affine bounds.
+
+    As with ``run_and_check_bounds`` the soundness check is self-consistency
+    (SUT affine bounds ⊇ SUT eval), not a comparison against a ground truth.
+    """
+    network_path = Path(network_path)
+    work_dir = network_path.parent
+
+    cmd = _build_bounds_cmd(
+        network_path,
+        box_paths,
+        work_dir / "output",
+        backend,
+        backend_arg,
+        work_dir,
+        extra_run_args=extra_run_args,
+        command="affine_bounds",
+    )
+    (work_dir / "output").mkdir(exist_ok=True)
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"passed": False, "error": f"timed out after {timeout}s"}
+
+    stdout = result.stdout.strip()
+    stderr = result.stderr.strip()
+
+    if result.returncode != 0:
+        return {
+            "passed": False,
+            "error": f"crash (exit {result.returncode}): {_truncate(stderr)}",
+            "stdout": stdout, "stderr": stderr,
+        }
+
+    output_files, _ = parse_output_paths(
+        result.stdout,
+        container_root=work_dir if is_container_backend(backend) else None,
+    )
+    if not output_files:
+        return {
+            "passed": False,
+            "error": "no output files produced",
+            "stdout": stdout, "stderr": stderr,
+        }
+    if len(output_files) != 4:
+        return {
+            "passed": False,
+            "error": (
+                "expected 4 affine-bound files (lb_weight, lb_bias, ub_weight, "
+                f"ub_bias), got {len(output_files)}"
+            ),
+            "stdout": stdout, "stderr": stderr,
+        }
+
+    n_in = 1
+    for d in input_shape:
+        n_in *= int(d)
+
+    lbw = np.fromfile(output_files[0], dtype=np.float64)
+    lbb = np.fromfile(output_files[1], dtype=np.float64)
+    ubw = np.fromfile(output_files[2], dtype=np.float64)
+    ubb = np.fromfile(output_files[3], dtype=np.float64)
+    for name, arr, want in (
+        ("lb_weight", lbw, n_in),
+        ("lb_bias", lbb, 1),
+        ("ub_weight", ubw, n_in),
+        ("ub_bias", ubb, 1),
+    ):
+        if arr.size != want:
+            return {
+                "passed": False,
+                "error": f"{name}: expected {want} double(s), got {arr.size}",
+                "stdout": stdout, "stderr": stderr,
+            }
+        if check_nan_inf and not np.isfinite(arr).all():
+            return {
+                "passed": False,
+                "error": f"{name}: contains NaN/Inf",
+                "stdout": stdout, "stderr": stderr,
+            }
+
+    # Non-finite affine bounds (e.g. an ``inf`` slope from ``exp`` overflowing on a
+    # wide box) are vacuously sound and cannot be meaningfully range-checked.  When
+    # ``check_nan_inf`` is off we accept them, mirroring how the interval ``bounds``
+    # fuzzer tolerates ``inf`` intervals; when it is on they have already failed above.
+    if not all(np.isfinite(a).all() for a in (lbw, lbb, ubw, ubb)):
+        return {"passed": True, "error": None}
+
+    lbw = lbw.reshape(n_in)
+    ubw = ubw.reshape(n_in)
+    lbb = float(lbb.reshape(-1)[0])
+    ubb = float(ubb.reshape(-1)[0])
+
+    # --- Validity: max_{x in box} (lb_aff - ub_aff)(x) <= tol. ---
+    box_lb = np.fromfile(box_paths[0][0], dtype=np.float64)
+    box_ub = np.fromfile(box_paths[0][1], dtype=np.float64)
+    center = 0.5 * (box_lb + box_ub)
+    radius = 0.5 * (box_ub - box_lb)
+    diff_w = lbw - ubw
+    max_diff = (lbb - ubb) + float(diff_w @ center) + float(np.abs(diff_w) @ radius)
+    # Scale the validity tolerance to the bound magnitude: fuzz graphs reach
+    # large weights/biases where pure-absolute float slack is too strict.
+    scale = abs(lbb) + abs(ubb) + float((np.abs(lbw) + np.abs(ubw)) @ (np.abs(center) + radius))
+    if max_diff > sample_atol + sample_rtol * scale:
+        return {
+            "passed": False,
+            "error": f"lower affine bound exceeds upper affine bound within the box "
+            f"by up to {max_diff:.3e}",
+            "stdout": stdout, "stderr": stderr,
+        }
+
+    sound = _check_affine_soundness(
+        network_path,
+        box_paths,
+        (lbw, lbb, ubw, ubb),
+        backend,
+        backend_arg,
+        n_eval_samples=n_eval_samples,
+        sample_atol=sample_atol,
+        sample_rtol=sample_rtol,
+        timeout=timeout,
+        extra_run_args=extra_run_args,
+    )
+    if not sound["passed"]:
+        sound.setdefault("stdout", stdout)
+        sound.setdefault("stderr", stderr)
+        return sound
+
+    return {"passed": True, "error": None}
+
+
+def _check_affine_soundness(
+    network_path,
+    box_paths,
+    affine,
+    backend,
+    backend_arg,
+    n_eval_samples,
+    sample_atol,
+    sample_rtol,
+    timeout,
+    extra_run_args,
+):
+    """Validate ``lb_aff(x) <= eval(x) <= ub_aff(x)`` at points sampled in the box.
+
+    ``affine`` is ``(lb_weight, lb_bias, ub_weight, ub_bias)``.  Mirrors
+    ``_check_bounds_soundness``: sampled ``eval`` runs that crash or yield a
+    non-finite value are skipped; only a finite output escaping the affine bounds
+    beyond tolerance is a failure.
+    """
+    if n_eval_samples <= 0:
+        return {"passed": True, "error": None}
+
+    lbw, lbb, ubw, ubb = affine
+    box = [
+        (np.fromfile(lb_path, dtype=np.float64), np.fromfile(ub_path, dtype=np.float64))
+        for lb_path, ub_path in box_paths
+    ]
+    h = hashlib.sha256()
+    for lb_path, ub_path in box_paths:
+        h.update(Path(lb_path).read_bytes())
+        h.update(Path(ub_path).read_bytes())
+    seed = int.from_bytes(h.digest()[:4], "big")
+
+    work_dir = Path(network_path).parent
+    eval_out_dir = work_dir / "eval_output"
+    eval_out_dir.mkdir(exist_ok=True)
+
+    for point in _sample_points(box, n_eval_samples, seed):
+        outputs = _eval_point(
+            network_path,
+            point,
+            eval_out_dir,
+            backend,
+            backend_arg,
+            1,
+            timeout=timeout,
+            extra_run_args=extra_run_args,
+        )
+        if outputs is None:
+            continue  # eval crashed / wrong shape — not a bounds bug
+        out = outputs[0]
+        if out.size != 1:
+            continue
+        fv = float(out.reshape(-1)[0])
+        if not np.isfinite(fv):
+            continue
+        x = point[0]  # flat input for the single invar
+        lb_aff = float(x @ lbw + lbb)
+        ub_aff = float(x @ ubw + ubb)
+        tol = sample_atol + sample_rtol * max(abs(lb_aff), abs(ub_aff), abs(fv))
+        if lb_aff - fv > tol:
+            return {
+                "passed": False,
+                "error": (
+                    f"lower affine bound unsound — exceeds an eval sample by "
+                    f"{lb_aff - fv:.3e} (atol {sample_atol:.1e}, rtol {sample_rtol:.1e})"
+                ),
+            }
+        if fv - ub_aff > tol:
+            return {
+                "passed": False,
+                "error": (
+                    f"upper affine bound unsound — an eval sample exceeds it by "
+                    f"{fv - ub_aff:.3e} (atol {sample_atol:.1e}, rtol {sample_rtol:.1e})"
+                ),
+            }
 
     return {"passed": True, "error": None}
 
@@ -936,8 +1251,10 @@ def _build_bounds_cmd(
     backend_arg,
     test_dir,
     extra_run_args=(),
+    command="bounds",
 ):
-    """Build the CLI command for ``bounds`` with one ``box`` marker per invar."""
+    """Build the CLI command for ``command`` (``bounds`` or ``affine_bounds``)
+    with one ``box`` marker per invar."""
     if is_container_backend(backend):
         tokens = []
         for lb_path, ub_path in box_paths:
@@ -949,7 +1266,7 @@ def _build_bounds_cmd(
         cmd = [
             *container_run_prefix(backend, test_dir, extra_run_args),
             backend_arg,
-            "bounds",
+            command,
             "--output-dir",
             f"/data/{output_dir.relative_to(test_dir)}",
             f"/data/{network_path.relative_to(test_dir)}",
@@ -961,7 +1278,7 @@ def _build_bounds_cmd(
             tokens += ["box", str(lb_path), str(ub_path)]
         cmd = [
             *shlex.split(backend_arg),
-            "bounds",
+            command,
             "--output-dir",
             str(output_dir),
             str(network_path),

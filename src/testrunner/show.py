@@ -79,6 +79,104 @@ def _show_eval_grad(test_dir, config):
                 _print_bin(p, f"output {i}")
 
 
+def _print_box_inputs(test_dir, inputs):
+    """Print the interleaved ``box``/``point`` input spec used by bounds/verify.
+
+    ``inputs`` is a flat list of markers (``"box"``, ``"point"``) interleaved
+    with file paths: ``"box"`` consumes the next two paths (lb, ub), ``"point"``
+    the next one.
+    """
+    print("Inputs:")
+    i = 0
+    idx = 0
+    while i < len(inputs):
+        marker = inputs[i]
+        if marker == "box":
+            print(f"  input {idx}: box")
+            _print_bin(test_dir / inputs[i + 1], f"input {idx} lb", indent="    ")
+            _print_bin(test_dir / inputs[i + 2], f"input {idx} ub", indent="    ")
+            i += 3
+        elif marker == "point":
+            print(f"  input {idx}: point")
+            _print_bin(test_dir / inputs[i + 1], f"input {idx}", indent="    ")
+            i += 2
+        else:
+            _print_bin(test_dir / inputs[i], f"input {idx}")
+            i += 1
+        idx += 1
+
+
+def _show_affine_bounds(test_dir, config):
+    command = config["command"]
+    network = config.get("network")
+    inputs = config.get("inputs", [])
+
+    print(f"Command: {command}")
+    if "input_shape" in config:
+        print(f"Input shape: {config['input_shape']}")
+    if "output_shapes" in config:
+        print(f"Output shapes: {config['output_shapes']}")
+    print(f"Sample atol: {float(config.get('sample_atol', 1e-9)):.1e}")
+    if config.get("reference_lb") and config.get("reference_ub"):
+        print(f"Tightness factor: {float(config.get('tightness_factor', 1.5))}")
+    print()
+
+    if network:
+        _print_network(test_dir / network)
+
+    if inputs:
+        _print_box_inputs(test_dir, inputs)
+
+    for label, key in (("Sample inputs", "sample_inputs"), ("Sample outputs", "sample_outputs")):
+        paths = config.get(key, [])
+        if paths:
+            print(f"{label}:")
+            for i, rel in enumerate(paths):
+                _print_bin(test_dir / rel, f"{key} {i}")
+
+    for label, key in (("Reference lower bounds", "reference_lb"),
+                        ("Reference upper bounds", "reference_ub")):
+        paths = config.get(key, [])
+        if paths:
+            print(f"{label}:")
+            for i, rel in enumerate(paths):
+                _print_bin(test_dir / rel, f"{key} {i}")
+
+    actual_dir = test_dir / "actual"
+    if actual_dir.exists():
+        actual_bins = sorted(actual_dir.glob("*.bin"))
+        if actual_bins:
+            print("Actual affine bounds:")
+            for p in actual_bins:
+                _print_bin(p, p.stem)
+
+
+def _show_verify(test_dir, config):
+    command = config["command"]
+    network = config.get("network")
+    inputs = config.get("inputs", [])
+
+    print(f"Command: {command}")
+    print(f"Expected verdict: {config.get('expected_verdict', '[not set]')}")
+    print(f"Box atol: {float(config.get('box_atol', 1e-9)):.1e}")
+    print(f"Margin atol: {float(config.get('margin_atol', 0.0)):.1e}")
+    print()
+
+    if network:
+        _print_network(test_dir / network)
+
+    if inputs:
+        _print_box_inputs(test_dir, inputs)
+
+    actual_dir = test_dir / "actual"
+    if actual_dir.exists():
+        cx_bins = sorted(actual_dir.glob("counterexample_*.bin"))
+        if cx_bins:
+            print("Counterexamples:")
+            for i, p in enumerate(cx_bins):
+                _print_bin(p, f"counterexample {i}")
+
+
 def _show_train(test_dir, config):
     print("Command: train")
     skip = {"command"}
@@ -152,7 +250,11 @@ def _show_test(test_dir):
 
     if command in ("eval", "grad", "bounds"):
         _show_eval_grad(test_dir, config)
-    elif command in ("fuzz_eval", "fuzz_grad", "fuzz_bounds"):
+    elif command == "affine_bounds":
+        _show_affine_bounds(test_dir, config)
+    elif command in ("verify", "verify2"):
+        _show_verify(test_dir, config)
+    elif command in ("fuzz_eval", "fuzz_grad", "fuzz_bounds", "fuzz_affine_bounds"):
         _show_fuzz(test_dir, config)
     elif command == "train":
         _show_train(test_dir, config)

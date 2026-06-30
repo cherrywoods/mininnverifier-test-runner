@@ -178,6 +178,7 @@ DEFAULT_SCORING = {
     "fuzz_eval": "proportional",
     "fuzz_grad": "proportional",
     "fuzz_bounds": "proportional",
+    "fuzz_affine_bounds": "proportional",
     "bench_eval": "speed",
     "bench_grad": "speed",
     "bench_bounds": "speed",

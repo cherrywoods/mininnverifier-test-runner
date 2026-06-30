@@ -78,7 +78,7 @@ SAFE_PRIMITIVES = [p for p in ALL_PRIMITIVES if p not in UNSAFE_PRIMITIVES]
 # ---------------------------------------------------------------------------
 
 
-def generate_graph(draw, primitives=None, allow_bilinear_dot=True) -> Graph:
+def generate_graph(draw, primitives=None, allow_bilinear_dot=True, n_inputs=None) -> Graph:
     """Generate a random valid compute graph.
 
     Args:
@@ -88,6 +88,9 @@ def generate_graph(draw, primitives=None, allow_bilinear_dot=True) -> Graph:
             constant right operand (a linear application). The bounds fuzzer
             sets this so that ``dot`` is never a bilinear application of two
             bounded operands, which IBP does not handle.
+        n_inputs: when given, fix the number of input variables instead of
+            drawing it.  The ``affine_bounds`` fuzzer passes ``1`` because CROWN
+            relaxes a single-input scalar-output network (see ``scalarize_graph``).
 
     Returns:
         A Graph with random structure and constant values.
@@ -96,7 +99,8 @@ def generate_graph(draw, primitives=None, allow_bilinear_dot=True) -> Graph:
         primitives = ALL_PRIMITIVES
 
     # Generate input variables
-    n_inputs = draw(_st_n_inputs)
+    if n_inputs is None:
+        n_inputs = draw(_st_n_inputs)
     invars = []
     for i in range(n_inputs):
         ndim = draw(_st_ndim)
@@ -146,6 +150,47 @@ def generate_graph(draw, primitives=None, allow_bilinear_dot=True) -> Graph:
         outvars = [invars[0]]
 
     return Graph(invars=invars, outvars=outvars, equations=equations, constants=constants)
+
+
+def scalarize_graph(graph: Graph) -> Graph:
+    """Reduce ``graph``'s single output to a scalar (shape ``()``) in place.
+
+    The ``affine_bounds`` CLI relaxes a *scalar*-output network, so the
+    affine-bounds fuzzer appends a flatten + full ``reduce_sum`` to collapse the
+    last computed variable (of any shape) to ``()``.  Both primitives are linear,
+    so they add no relaxation gap of their own.  Returns the mutated graph.
+    """
+    out = graph.outvars[0]
+    if out.shape == ():
+        return graph
+
+    total = 1
+    for d in out.shape:
+        total *= d
+
+    used = (
+        {v.name for v in graph.invars}
+        | set(graph.constants)
+        | {e.output.name for e in graph.equations}
+    )
+
+    def fresh(shape):
+        i = 0
+        while _var_name(i) in used:
+            i += 1
+        name = _var_name(i)
+        used.add(name)
+        return Var(name=name, shape=shape)
+
+    cur = out
+    if len(out.shape) != 1:
+        flat = fresh((total,))
+        graph.equations.append(Equation("reshape", [cur], flat, {"new_shape": (total,)}))
+        cur = flat
+    scalar = fresh(())
+    graph.equations.append(Equation("reduce_sum", [cur], scalar, {"axes": (0,)}))
+    graph.outvars = [scalar]
+    return graph
 
 
 def _try_apply(
