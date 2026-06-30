@@ -15,10 +15,15 @@ to run and what to check. The runner supports three backends:
   identical mount layout and path rewriting
 - **local** — runs a local command directly
 
-Seven test modes are supported: `eval`, `grad`, `train`, `fuzz_eval`,
-`fuzz_grad`, `bench_eval`, and `bench_grad`. The runner discovers all tests
-under a root directory, sorts them cheapest-first, and writes the progress
-to the terminal.
+Twelve test modes are supported, grouped by what they exercise:
+
+- **functional** — `eval`, `grad`, `bounds`, `verify`
+- **training** — `train`
+- **fuzzing** — `fuzz_eval`, `fuzz_grad`, `fuzz_bounds`
+- **benchmarking** — `bench_eval`, `bench_grad`, `bench_bounds`, `bench_verify`
+
+The runner discovers all tests under a root directory, sorts them
+cheapest-first, and writes the progress to the terminal.
 
 ## Commands
 
@@ -116,12 +121,14 @@ the CLI contract and file formats the implementation must follow.
 
 ### CLI
 
-All three commands share the same argument structure:
+These commands share a common argument structure:
 
 ```
-<impl> eval  --output-dir <dir> <network.mininn> <input1.bin> [<input2.bin> ...]
-<impl> grad  --output-dir <dir> <network.mininn> <input1.bin> [<input2.bin> ...]
-<impl> train --output-dir <dir> <dataset-name>  <train_inputs.bin> <train_labels.bin>
+<impl> eval   --output-dir <dir> <network.mininn> <input1.bin> [<input2.bin> ...]
+<impl> grad   --output-dir <dir> <network.mininn> <input1.bin> [<input2.bin> ...]
+<impl> bounds --output-dir <dir> <network.mininn> box <lb.bin> <ub.bin>
+<impl> verify --output-dir <dir> <network.mininn> box <lb.bin> <ub.bin>
+<impl> train  --output-dir <dir> <dataset-name>  <train_inputs.bin> <train_labels.bin>
 ```
 
 `<impl>` is the `backend_arg` — either a container image name (docker/podman)
@@ -129,10 +136,34 @@ or a shell command (e.g. `python -m myimpl`). For the container backends
 (docker, podman) the test directory is mounted at `/data` and all paths are
 rewritten accordingly.
 
+For `bounds` and `verify` the inputs are a flat list interleaving inline
+markers (`box`, `point`) with file paths: `box <lb.bin> <ub.bin>` denotes an
+axis-aligned input box, `point <x.bin>` a concrete point. Markers are passed
+through verbatim; only file paths are rewritten for the backend.
+
 **`eval` and `grad`** must:
 
 - Write each output array to a file inside `--output-dir`
 - Print the absolute path of each output file to stdout, one per line
+- Exit 0 on success, non-zero on failure
+
+**`bounds`** must:
+
+- Compute a lower and upper bound for each network output over the input box
+- Write `output_<i>_lb.bin` and `output_<i>_ub.bin` per output inside
+  `--output-dir`, and print their paths to stdout — lower bound before upper
+  bound for each output
+- Exit 0 on success, non-zero on failure
+
+**`verify`** must:
+
+- Decide whether the network's scalar output (a *margin*) satisfies
+  `margin(x) >= 0` for all `x` in the input box
+- Print the verdict as the **last** stdout line: `sat` (holds) or `viol`
+  (violated); any logging may precede it
+- For a `viol` verdict, write one `counterexample_<i>.bin` per network input
+  inside `--output-dir` and print their path(s) on the line(s) immediately
+  before the verdict
 - Exit 0 on success, non-zero on failure
 
 **`train`** must:
@@ -256,6 +287,59 @@ tolerance mechanism.
 
 Default timeout: 60 s. Default scoring: **binary**.
 
+### `bounds` — interval output bounds
+
+Runs the `bounds` command on a network and an input box, producing a lower and
+upper bound `.bin` file per network output. The `bounds_within_range` check
+validates them for:
+
+- **Soundness** — every pre-evaluated `sample_outputs` value (at points inside
+  the box) lies within the impl's bounds, with absolute slack `sample_atol`.
+- **Tightness** (optional) — if reference IBP bounds are supplied, the impl's
+  box width may not exceed the reference width by more than
+  `(tightness_factor - 1)` on either side.
+
+```json
+{
+  "command": "bounds",
+  "network": "network.mininn",
+  "inputs": ["box", "input_0_lb.bin", "input_0_ub.bin"],
+  "check": "bounds_within_range",
+  "output_shapes": [[10]],
+  "sample_outputs": ["sample_outputs_0.bin"],
+  "sample_atol": 1e-9,
+  "reference_lb": ["reference_output_0_lb.bin"],
+  "reference_ub": ["reference_output_0_ub.bin"],
+  "tightness_factor": 1.1
+}
+```
+
+`output_shapes` and `sample_outputs` are required; `reference_lb`/`reference_ub`
+and `tightness_factor` (default `1.5`) enable the optional tightness check.
+
+Default timeout: 60 s. Default scoring: **binary**.
+
+### `verify` — robustness verification
+
+Runs the `verify` command, which decides whether a network's scalar margin
+output satisfies `margin(x) >= 0` for all `x` in the input box, and emits a
+`sat`/`viol` verdict. The runner checks the verdict against `expected_verdict`;
+for a `viol` verdict it re-evaluates the reported counterexample (via `eval`)
+and confirms the witness is inside the box and has `margin < 0` — any valid
+witness is accepted, not just a stored one.
+
+```json
+{
+  "command": "verify",
+  "network": "network.mininn",
+  "inputs": ["box", "input_0_lb.bin", "input_0_ub.bin"],
+  "expected_verdict": "sat",
+  "box_atol": 1e-9
+}
+```
+
+Default timeout: 300 s. Default scoring: **binary**.
+
 ### `train` — training with accuracy evaluation
 
 Runs the `train` command, which must print `eval_batch_size: N` on its first
@@ -282,13 +366,13 @@ Checkpoints **must** be saved inside the directory passed via `--output-dir`
 Default timeout: 600 s. Default scoring: **exponential** based on best test
 accuracy (higher k rewards improvements near 100% more heavily).
 
-### `fuzz_eval` / `fuzz_grad` — robustness fuzzing
+### `fuzz_eval` / `fuzz_grad` / `fuzz_bounds` — robustness fuzzing
 
 Uses [Hypothesis](https://hypothesis.readthedocs.io/) to generate random
-compute graphs and matching inputs, then calls `eval` or `grad` on each one.
-A trial fails if the command crashes, times out, produces the wrong number of
-output files, outputs arrays of the wrong shape, or (optionally) outputs
-NaN/Inf values.
+compute graphs and matching inputs, then calls `eval`, `grad`, or `bounds` on
+each one. A trial fails if the command crashes, times out, produces the wrong
+number of output files, outputs arrays of the wrong shape, or (optionally)
+outputs NaN/Inf values.
 
 Failing cases are saved to `actual/fuzz_failures/<n>/` and can be inspected
 with `python -m testrunner.show` or reproduced with
@@ -307,14 +391,35 @@ with `python -m testrunner.show` or reproduced with
 `primitives` can be `"all"` (default), `"safe"` (excludes `log`, `sqrt`,
 `reciprocal`, `exp`), or an explicit list of primitive names.
 
+`fuzz_bounds` additionally widens each random input into an axis-aligned box and
+checks the returned bounds for **soundness** (random points inside the box stay
+within the bounds) and optional finiteness. The box half-width `eps` is drawn
+per trial from `[eps_min, eps_max]` (default `[0.0, 0.5]`; set `eps` as a
+shorthand for `eps_max`). Soundness sampling is tunable via `n_eval_samples`
+(default 3), `sample_atol`, and `sample_rtol` (default `1e-6`).
+
+```json
+{
+  "command": "fuzz_bounds",
+  "n_trials": 500,
+  "seed": 0,
+  "primitives": "all",
+  "eps_min": 0.0,
+  "eps_max": 0.5,
+  "check_nan_inf": false
+}
+```
+
 Default timeout: 600 s. Default scoring: **proportional** to fraction of
 trials passed.
 
-### `bench_eval` / `bench_grad` — performance benchmarking
+### `bench_eval` / `bench_grad` / `bench_bounds` / `bench_verify` — performance benchmarking
 
-Runs the `eval` or `grad` command repeatedly (with warm-up) and measures
-median wall-clock time. The test passes when the SUT median does not exceed
-the reference median by more than `max_slowdown`.
+Runs the underlying command (`eval`, `grad`, `bounds`, or `verify`) repeatedly
+(with warm-up) and measures median wall-clock time. The test passes when the
+SUT median does not exceed the reference median by more than `max_slowdown`.
+The `inputs` follow the same convention as the underlying mode (plain `.bin`
+paths for `eval`/`grad`; `box`/`point` markers for `bounds`/`verify`).
 
 Reference times are generated with `--generate` and stored in
 `reference_time.json` inside the test directory.
@@ -328,6 +433,8 @@ Reference times are generated with `--generate` and stored in
   "max_slowdown": 2.0
 }
 ```
+
+Default timeout: 600 s (`bench_verify`: 900 s). Default scoring: **speed**.
 
 ## Examples
 

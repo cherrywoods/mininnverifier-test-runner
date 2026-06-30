@@ -170,11 +170,18 @@ SCORING_FUNCTIONS = {
 DEFAULT_SCORING = {
     "eval": "binary",
     "grad": "binary",
+    "bounds": "binary",
+    "affine_bounds": "binary",
+    "verify": "binary",
+    "verify2": "binary",
     "train": "exponential",
     "fuzz_eval": "proportional",
     "fuzz_grad": "proportional",
+    "fuzz_bounds": "proportional",
     "bench_eval": "speed",
     "bench_grad": "speed",
+    "bench_bounds": "speed",
+    "bench_verify": "speed",
 }
 
 

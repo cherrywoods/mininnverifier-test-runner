@@ -16,7 +16,7 @@ from testrunner.fuzz.graph_builder import (
     UNARY_ELEMENTWISE,
     UNARY_ACTIVATIONS,
     BINARY_ELEMENTWISE,
-    LAST_AXIS_OPS,
+    LAST_AXES_OPS,
     Var,
     Equation,
     Graph,
@@ -531,7 +531,7 @@ def test_generate_graph_single_primitive(data):
 
 
 def test_all_primitives_contains_expected():
-    for p in UNARY_ELEMENTWISE + BINARY_ELEMENTWISE + UNARY_ACTIVATIONS + LAST_AXIS_OPS:
+    for p in UNARY_ELEMENTWISE + BINARY_ELEMENTWISE + UNARY_ACTIVATIONS + LAST_AXES_OPS:
         assert p in ALL_PRIMITIVES
     for p in ["dot", "where", "expand_dims", "moveaxis", "reshape", "reduce_sum"]:
         assert p in ALL_PRIMITIVES
@@ -544,8 +544,12 @@ def test_safe_primitives_excludes_unsafe():
 
 
 def test_safe_primitives_includes_new_primitives():
-    for p in UNARY_ACTIVATIONS + LAST_AXIS_OPS:
+    # leaky_relu and the last-axes ops are numerically safe.
+    for p in ["leaky_relu"] + LAST_AXES_OPS:
         assert p in SAFE_PRIMITIVES
+    # elu and gelu are exp-based, so they are classified unsafe.
+    for p in ["elu", "gelu"]:
+        assert p not in SAFE_PRIMITIVES
 
 
 # ---------------------------------------------------------------------------
@@ -584,13 +588,15 @@ def test_try_apply_gelu_no_options():
 
 def test_try_apply_pad_output_shape():
     x = Var("a", (4, 10))  # n = 10
-    # draw order: pick x, lp=2, rp=1, dilation=2 → dil_len=10+9=19, out=19+2+1=22
-    draw = _fixed_draw(x, 2, 1, 2)
+    # draw order: pick x, n_axes=1, left=2, right=1, mid=2 (last axis only):
+    #   2 + 10 + (10 - 1) * 2 + 1 = 31, leading dim preserved.
+    draw = _fixed_draw(x, 1, 2, 1, 2)
     result = _try_apply("pad", [x], draw, 1, 0, {})
     assert result is not None
     eqn, out_var, _, _, _ = result
-    assert out_var.shape == (4, 22)
+    assert out_var.shape == (4, 31)
     assert eqn.options["config"] == (2, 1, 2)
+    assert eqn.options["axes"] == (-1,)
     assert eqn.options["value"] == 0.0
 
 
@@ -680,20 +686,25 @@ def test_generate_graph_new_activations_only(data):
 @settings(max_examples=20, suppress_health_check=list(HealthCheck))
 def test_generate_graph_last_axis_ops_only(data):
     draw = data.draw
-    graph = generate_graph(draw, primitives=LAST_AXIS_OPS)
+    graph = generate_graph(draw, primitives=LAST_AXES_OPS)
     for eqn in graph.equations:
-        assert eqn.primitive in LAST_AXIS_OPS
+        assert eqn.primitive in LAST_AXES_OPS
         if eqn.primitive == "pad":
-            # pad is 1-D (last axis): leading dims preserved
-            assert eqn.output.shape[:-1] == eqn.inputs[0].shape[:-1]
+            # pad grows up to the last two axes; leading dims are preserved.
+            inp_shape, out_shape = eqn.inputs[0].shape, eqn.output.shape
+            assert len(out_shape) == len(inp_shape)
+            assert out_shape[:-2] == inp_shape[:-2]
+            assert all(o >= i for o, i in zip(out_shape, inp_shape))
         elif eqn.primitive == "conv":
-            # NCHW × OIHW conv: input is 4-D, output shares N with input
-            assert len(eqn.inputs[0].shape) == 4
-            assert eqn.output.shape[0] == eqn.inputs[0].shape[0]
-            # Kernel is OIHW (4-D); C_in must match
-            assert len(eqn.inputs[1].shape) == 4
-            assert eqn.inputs[1].shape[1] == eqn.inputs[0].shape[1]
-            assert eqn.output.shape[1] == eqn.inputs[1].shape[0]
+            # (N, C_in, *spatial) conv with an (C_out, C_in, *spatial) kernel,
+            # >= 3-D input (>= 1 spatial axis); output shares N with the input.
+            inp_shape = eqn.inputs[0].shape
+            ker_shape = eqn.inputs[1].shape
+            assert len(inp_shape) >= 3
+            assert len(ker_shape) == len(inp_shape)
+            assert ker_shape[1] == inp_shape[1]            # C_in matches
+            assert eqn.output.shape[0] == inp_shape[0]     # N preserved
+            assert eqn.output.shape[1] == ker_shape[0]     # C_out
         else:
             # avgpool operates on last two spatial axes, preserves leading dims
             assert len(eqn.inputs[0].shape) >= 2
