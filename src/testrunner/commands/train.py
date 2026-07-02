@@ -45,6 +45,7 @@ from testrunner.commands.common import (
     get_timeout,
     is_container_backend,
     parse_output_paths,
+    reap_container,
     run_subprocess,
 )
 
@@ -260,6 +261,7 @@ def _eval_accuracy(
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
+            reap_container(backend, extra_run_args)
             return None, (
                 f"eval timed out on {checkpoint_path.name} batch {batch_idx} after {timeout}s"
             )
@@ -336,6 +338,7 @@ def run_train_test(
             timeout=timeout,
             log_file=None if closed else output_dir / "stdout.log",
             output_handler=progress_handler,
+            on_timeout=lambda: reap_container(backend, extra_run_args),
         )
     except subprocess.TimeoutExpired:
         return {"passed": False, "error": f"train command timed out after {timeout}s"}

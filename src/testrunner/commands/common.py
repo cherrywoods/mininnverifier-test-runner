@@ -25,6 +25,57 @@ def is_container_backend(backend):
     return backend in CONTAINER_BACKENDS
 
 
+def container_name_from_args(extra_run_args):
+    """Extract the ``--name`` value from ``docker``/``podman`` run args.
+
+    Accepts both ``--name=foo`` and ``--name foo`` forms. Returns the
+    container name, or ``None`` when no name is present.
+    """
+    args = list(extra_run_args)
+    for i, arg in enumerate(args):
+        if arg.startswith("--name="):
+            return arg[len("--name="):]
+        if arg == "--name" and i + 1 < len(args):
+            return args[i + 1]
+    return None
+
+
+def reap_container(backend, extra_run_args):
+    """Best-effort stop+remove of the named SUT container.
+
+    Killing the ``docker``/``podman run`` *client* process (what our
+    timeout path does via ``proc.kill()``) does **not** stop the
+    container when the SUT spawns child processes — conmon keeps the
+    container alive, so it goes on consuming the slot's pinned CPUs
+    indefinitely. On timeout we must therefore stop the container itself
+    by name.
+
+    No-op for the ``local`` backend or when no ``--name`` was supplied
+    (e.g. an interactive ``docker``/``podman`` invocation without the
+    webapp's ``--extra-run-args``). Never raises: reaping is best-effort
+    cleanup and must not mask the timeout that triggered it.
+    """
+    if not is_container_backend(backend):
+        return
+    name = container_name_from_args(extra_run_args)
+    if not name:
+        return
+    for sub_cmd in (["kill", "--signal=KILL", name], ["rm", "-f", name]):
+        try:
+            subprocess.run(
+                [backend, *sub_cmd],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except Exception:
+            # Container may already be gone (clean exit + --rm), the
+            # backend CLI may be unavailable, or the call may itself time
+            # out; none of that should propagate out of cleanup.
+            pass
+
+
 def container_run_prefix(backend, test_dir, extra_run_args=()):
     """Return the ``<exe> run --rm [extra] -v <test_dir>:/data`` prefix.
 
@@ -92,7 +143,7 @@ class SubprocessResult:
         self.stderr = stderr
 
 
-def run_subprocess(cmd, cwd=None, timeout=60, log_file=None, output_handler=None):
+def run_subprocess(cmd, cwd=None, timeout=60, log_file=None, output_handler=None, on_timeout=None):
     """Run a command with line-by-line stdout streaming.
 
     Streams stdout to *log_file* (a Path) and *output_handler* (via
@@ -102,6 +153,15 @@ def run_subprocess(cmd, cwd=None, timeout=60, log_file=None, output_handler=None
     Returns a :class:`SubprocessResult` compatible with
     ``subprocess.CompletedProcess``.  Raises ``subprocess.TimeoutExpired``
     on timeout (after killing the process).
+
+    *on_timeout*, when provided, is invoked exactly once on timeout —
+    after the killed process has been reaped and before
+    ``TimeoutExpired`` is raised. It runs synchronously in the calling
+    thread so that any cleanup it performs (e.g. stopping the SUT
+    container via :func:`reap_container`) completes before the caller
+    returns and the next test starts. Container backends need this
+    because ``proc.kill()`` only kills the ``run`` client, not the
+    container.
     """
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=cwd)
 
@@ -149,6 +209,8 @@ def run_subprocess(cmd, cwd=None, timeout=60, log_file=None, output_handler=None
     stderr_thread.join(timeout=5)
 
     if timed_out.is_set():
+        if on_timeout is not None:
+            on_timeout()
         raise subprocess.TimeoutExpired(cmd, timeout)
 
     stdout_text = "\n".join(stdout_lines)

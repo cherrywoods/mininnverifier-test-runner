@@ -45,6 +45,7 @@ from .common import (
     get_timeout,
     is_container_backend,
     parse_output_paths,
+    reap_container,
     run_subprocess,
 )
 
@@ -119,6 +120,7 @@ def _eval_margin(cx_files, config, test_dir, output_dir, backend, backend_arg, e
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
     except subprocess.TimeoutExpired:
+        reap_container(backend, extra_run_args)
         return None, "counterexample eval timed out"
     if result.returncode != 0:
         return None, f"counterexample eval failed: {result.stderr.strip()}"
@@ -143,6 +145,7 @@ def run_verify_test(
             cmd, cwd=cwd, timeout=timeout,
             log_file=None if closed else output_dir / "stdout.log",
             output_handler=output_handler,
+            on_timeout=lambda: reap_container(backend, extra_run_args),
         )
     except subprocess.TimeoutExpired:
         return {"passed": False, "error": f"verify timed out after {timeout}s"}

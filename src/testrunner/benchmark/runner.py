@@ -35,6 +35,7 @@ from testrunner.commands.common import (
     build_eval_grad_cmd,
     get_timeout,
     parse_output_paths,
+    reap_container,
     run_subprocess,
 )
 from testrunner.commands.bounds import build_bounds_cmd
@@ -133,6 +134,7 @@ def _run_benchmark(
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
         except subprocess.TimeoutExpired:
+            reap_container(backend, extra_run_args)
             return {"passed": False, "error": f"warm-up run {i + 1} timed out after {timeout}s"}
         if result.returncode != 0:
             return {
@@ -150,6 +152,7 @@ def _run_benchmark(
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
         except subprocess.TimeoutExpired:
+            reap_container(backend, extra_run_args)
             return {
                 "passed": False,
                 "error": f"repetition {i + 1}/{n_repeats} timed out after {timeout}s",

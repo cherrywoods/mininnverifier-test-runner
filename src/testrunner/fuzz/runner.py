@@ -46,6 +46,7 @@ from testrunner.commands.common import (
     get_timeout,
     is_container_backend,
     parse_output_paths,
+    reap_container,
 )
 from .graph_builder import generate_graph, serialize_graph, ALL_PRIMITIVES, SAFE_PRIMITIVES
 
@@ -495,6 +496,7 @@ def run_and_check(
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
+        reap_container(backend, extra_run_args)
         error = f"timed out after {timeout}s"
         return {"passed": False, "error": error}
 
@@ -597,6 +599,7 @@ def run_and_check_bounds(
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
+        reap_container(backend, extra_run_args)
         return {"passed": False, "error": f"timed out after {timeout}s"}
 
     stdout = result.stdout.strip()
@@ -830,6 +833,7 @@ def _eval_point(
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
+        reap_container(backend, extra_run_args)
         return None
     if result.returncode != 0:
         return None

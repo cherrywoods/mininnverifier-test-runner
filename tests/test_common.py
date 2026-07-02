@@ -13,10 +13,12 @@ from testrunner.commands.common import (
     DEFAULT_TIMEOUTS,
     SubprocessResult,
     build_eval_grad_cmd,
+    container_name_from_args,
     container_run_prefix,
     get_timeout,
     is_container_backend,
     parse_output_paths,
+    reap_container,
     run_subprocess,
 )
 
@@ -231,6 +233,102 @@ def test_run_subprocess_timeout():
         popen.return_value = _make_popen_mock([], [], -9)
         with pytest.raises(subprocess.TimeoutExpired):
             run_subprocess(["sleep", "100"], timeout=0.001)
+
+
+class _ImmediateTimer:
+    """Fires the callback synchronously on start(), like a zero-delay timer."""
+
+    def __init__(self, interval, fn, *args, **kwargs):
+        self._fn = fn
+
+    def start(self):
+        self._fn()
+
+    def cancel(self):
+        pass
+
+    daemon = True
+
+
+def test_run_subprocess_on_timeout_called_on_timeout():
+    """on_timeout runs exactly once, before TimeoutExpired is raised."""
+    calls = []
+    with patch("subprocess.Popen") as popen, \
+         patch("testrunner.commands.common.threading.Timer", _ImmediateTimer):
+        popen.return_value = _make_popen_mock([], [], -9)
+        with pytest.raises(subprocess.TimeoutExpired):
+            run_subprocess(
+                ["sleep", "100"], timeout=0.001,
+                on_timeout=lambda: calls.append("reaped"),
+            )
+    assert calls == ["reaped"]
+
+
+def test_run_subprocess_on_timeout_not_called_on_success():
+    """on_timeout must not fire when the command completes normally."""
+    calls = []
+    with patch("subprocess.Popen") as popen:
+        popen.return_value = _make_popen_mock(["ok\n"], [], 0)
+        result = run_subprocess(
+            ["echo", "ok"], timeout=5, on_timeout=lambda: calls.append("reaped")
+        )
+    assert result.returncode == 0
+    assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# container_name_from_args / reap_container
+# ---------------------------------------------------------------------------
+
+
+def test_container_name_from_args_equals_form():
+    assert container_name_from_args(["--network=none", "--name=run-7-abc"]) == "run-7-abc"
+
+
+def test_container_name_from_args_space_form():
+    assert container_name_from_args(["--name", "run-7-abc", "--read-only"]) == "run-7-abc"
+
+
+def test_container_name_from_args_absent():
+    assert container_name_from_args(["--network=none", "--read-only"]) is None
+    assert container_name_from_args(()) is None
+
+
+def test_reap_container_local_backend_is_noop():
+    with patch("subprocess.run") as run:
+        reap_container("local", ["--name=whatever"])
+    run.assert_not_called()
+
+
+def test_reap_container_no_name_is_noop():
+    with patch("subprocess.run") as run:
+        reap_container("podman", ["--network=none"])
+    run.assert_not_called()
+
+
+def test_reap_container_kills_and_removes_by_name():
+    with patch("subprocess.run") as run:
+        reap_container("podman", ["--name=run-7-abc", "--read-only"])
+    cmds = [call.args[0] for call in run.call_args_list]
+    assert ["podman", "kill", "--signal=KILL", "run-7-abc"] in cmds
+    assert ["podman", "rm", "-f", "run-7-abc"] in cmds
+
+
+def test_reap_container_uses_docker_backend():
+    with patch("subprocess.run") as run:
+        reap_container("docker", ["--name=c1"])
+    assert all(call.args[0][0] == "docker" for call in run.call_args_list)
+
+
+def test_reap_container_swallows_subprocess_errors():
+    """Cleanup must never raise, even if the backend CLI blows up."""
+    with patch("subprocess.run", side_effect=OSError("boom")):
+        reap_container("podman", ["--name=c1"])  # must not raise
+
+
+def test_reap_container_swallows_its_own_timeout():
+    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("podman", 10)):
+        reap_container("podman", ["--name=c1"])  # must not raise
 
 
 # ---------------------------------------------------------------------------
