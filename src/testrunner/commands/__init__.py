@@ -22,7 +22,7 @@ RUNNERS = {}
 # tests fail early before expensive ones are attempted.
 # Append new commands at the position that matches their cost.
 COMMAND_ORDER = [
-    "eval", "grad", "bounds", "affine_bounds", "verify", "train",
+    "eval", "grad", "bounds", "affine_bounds", "verify", "verify2", "train",
     "fuzz_eval", "fuzz_grad", "fuzz_bounds",
     "bench_eval", "bench_grad", "bench_bounds", "bench_verify",
 ]
@@ -51,6 +51,7 @@ def _init_runners():
             {
                 "train": run_train_test,
                 "verify": run_verify_test,
+                "verify2": run_verify_test,
                 "fuzz_eval": run_fuzz_eval,
                 "fuzz_grad": run_fuzz_grad,
                 "fuzz_bounds": run_fuzz_bounds,

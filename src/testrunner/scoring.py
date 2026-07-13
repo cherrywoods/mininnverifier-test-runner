@@ -173,6 +173,7 @@ DEFAULT_SCORING = {
     "bounds": "binary",
     "affine_bounds": "binary",
     "verify": "binary",
+    "verify2": "binary",
     "train": "exponential",
     "fuzz_eval": "proportional",
     "fuzz_grad": "proportional",
